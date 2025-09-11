@@ -15,4 +15,6 @@ python -m venv <directoryName>
 # 필요 모듈 설치 (처음에만)
 pip install -r requirements.txt
 
+# requirments.txt 갱신
+pip freeze > requirements.txt
 ```
