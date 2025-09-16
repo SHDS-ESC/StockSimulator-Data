@@ -17,4 +17,8 @@ pip install -r requirements.txt
 
 # requirments.txt 갱신
 pip freeze > requirements.txt
+
+# FastAPI 서버 실행
+uvicorn fastapi_app:app --host 0.0.0.0 --port 8000 --reload
+
 ```
