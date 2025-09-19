@@ -45,7 +45,7 @@ class PredictRequest(BaseModel):
 
 
 class PredictPoint(BaseModel):
-    day: int
+    day: date  # int에서 date로 변경
     date: date
     return_rate: float
     price: float
@@ -58,6 +58,8 @@ class PredictResponse(BaseModel):
     train_data_count: int
     feature_count: int
     predicted: List[PredictPoint]
+    chart_full: Optional[str] = Field(None, description="전체 데이터 차트 (base64)")
+    chart_30d: Optional[str] = Field(None, description="최근 30일 차트 (base64)")
 
 
 @app.get("/health")
@@ -90,9 +92,48 @@ def get_available_tickers():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/cache/info")
+def get_cache_info():
+    """캐시 정보 조회"""
+    try:
+        if db_service is None:
+            raise HTTPException(
+                status_code=503, 
+                detail="데이터베이스 연결이 설정되지 않았습니다."
+            )
+        
+        return db_service.get_cache_info()
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/cache")
+def clear_cache(ticker: Optional[str] = None):
+    """캐시 클리어"""
+    try:
+        if db_service is None:
+            raise HTTPException(
+                status_code=503, 
+                detail="데이터베이스 연결이 설정되지 않았습니다."
+            )
+        
+        db_service.clear_cache(ticker)
+        
+        if ticker:
+            return {"message": f"{ticker} 캐시가 클리어되었습니다."}
+        else:
+            return {"message": "모든 캐시가 클리어되었습니다."}
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/predict", response_model=PredictResponse)
 def predict(req: PredictRequest):
-    print(req)
+
+    print("request : ", req)
+
     """
     주식 예측 엔드포인트:
     - 노트북에서 검증된 StockPredictor 모델 사용
@@ -116,20 +157,25 @@ def predict(req: PredictRequest):
             ticker=req.ticker,
             train_days=req.train_days,
             predict_steps=req.predict_steps,
-            today=base_day
+            today=base_day            
         )
         
         # 예측 결과를 API 응답 형식으로 변환
         predicted_points = []
-        for i, (return_rate, price) in enumerate(zip(result['return_predictions'], result['price_predictions'])):
+        prediction_dates = result['prediction_dates']
+        for i, (return_rate, price, pred_date) in enumerate(zip(
+            result['return_predictions'], 
+            result['price_predictions'], 
+            prediction_dates
+        )):
             predicted_points.append(PredictPoint(
-                day=i + 1,
-                date=base_day + timedelta(days=i + 1),
+                day=pred_date,  # 계산된 실제 날짜 사용
+                date=pred_date,  # 동일한 날짜
                 return_rate=return_rate,
                 price=price
             ))
         
-        print(req, result)
+        print('req, result : ', req, result)
         
         return PredictResponse(
             ticker=result['ticker'],
@@ -137,7 +183,9 @@ def predict(req: PredictRequest):
             last_price=result['last_price'],
             train_data_count=result['train_data_count'],
             feature_count=result['feature_count'],
-            predicted=predicted_points
+            predicted=predicted_points,
+            chart_full=result.get('chart_full'),
+            chart_30d=result.get('chart_30d')
         )
         
     except ValueError as e:
