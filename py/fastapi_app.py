@@ -1,22 +1,57 @@
 from typing import Optional, List
 from datetime import date, timedelta
 import os
+import logging
+import traceback
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from py.stock_predictor import DatabaseService, predict_stock
 
+# 로깅 설정
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler('app.log', encoding='utf-8')
+    ]
+)
+logger = logging.getLogger(__name__)
+
 
 app = FastAPI(title="StockSimulator API", version="0.1.0")
+
+# 전역 예외 핸들러 추가
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.error(f"Global exception handler caught: {exc}")
+    logger.error(f"Request URL: {request.url}")
+    logger.error(f"Request method: {request.method}")
+    logger.error(f"Traceback: {traceback.format_exc()}")
+    
+    return JSONResponse(
+        status_code=500,
+        content={
+            "detail": f"내부 서버 오류: {str(exc)}",
+            "type": type(exc).__name__,
+            "request_url": str(request.url)
+        }
+    )
 
 # CORS (로컬/노트북/브라우저 테스트용)
 app.add_middleware(
     CORSMiddleware,
+    # 모든 도메인에서의 요청 허용
     allow_origins=["*"],
+    # 인증 정보 포함 허용
     allow_credentials=True,
+    # 모든 HTTP 메서드 허용
     allow_methods=["*"],
+    # 모든 헤더 허용
     allow_headers=["*"],
 )
 
@@ -31,9 +66,10 @@ db_config = {
 # 데이터베이스 서비스 초기화
 try:
     db_service = DatabaseService(db_config)
-    print("✅ 데이터베이스 연결 성공")
+    logger.info("✅ 데이터베이스 연결 성공")
 except Exception as e:
-    print(f"❌ 데이터베이스 연결 실패: {e}")
+    logger.error(f"❌ 데이터베이스 연결 실패: {e}")
+    logger.error(f"Traceback: {traceback.format_exc()}")
     db_service = None
 
 
@@ -45,10 +81,42 @@ class PredictRequest(BaseModel):
 
 
 class PredictPoint(BaseModel):
-    day: date  # int에서 date로 변경
+    day: int
     date: date
     return_rate: float
     price: float
+
+
+class InvestmentMetrics(BaseModel):
+    current_price: float
+    predicted_avg_price: float
+    predicted_max_price: float
+    predicted_min_price: float
+    expected_total_return: float
+    expected_avg_daily_return: float
+    predicted_volatility: float
+    upside_probability: float
+
+
+class RiskMetrics(BaseModel):
+    historical_volatility_annualized: float
+    predicted_volatility: float
+    var_95: float
+    max_expected_loss: float
+    max_expected_gain: float
+    estimated_sharpe_ratio: float
+
+
+class InvestmentAnalysis(BaseModel):
+    recommendation: str
+    action: str  # BUY, SELL, HOLD
+    confidence: str  # HIGH, MEDIUM, LOW
+    score: int
+    max_score: int
+    min_score: int
+    signals: List[str]
+    metrics: InvestmentMetrics
+    risk_metrics: RiskMetrics
 
 
 class PredictResponse(BaseModel):
@@ -58,6 +126,7 @@ class PredictResponse(BaseModel):
     train_data_count: int
     feature_count: int
     predicted: List[PredictPoint]
+    investment_analysis: InvestmentAnalysis
     chart_full: Optional[str] = Field(None, description="전체 데이터 차트 (base64)")
     chart_30d: Optional[str] = Field(None, description="최근 30일 차트 (base64)")
 
@@ -131,8 +200,10 @@ def clear_cache(ticker: Optional[str] = None):
 
 @app.post("/predict", response_model=PredictResponse)
 def predict(req: PredictRequest):
-
-    print("request : ", req)
+    logger.info(f"예측 요청 수신: {req}")
+    
+    # 요청 세부 정보 로깅
+    logger.info(f"Ticker: {req.ticker}, Train days: {req.train_days}, Predict steps: {req.predict_steps}")
 
     """
     주식 예측 엔드포인트:
@@ -169,13 +240,28 @@ def predict(req: PredictRequest):
             prediction_dates
         )):
             predicted_points.append(PredictPoint(
-                day=pred_date,  # 계산된 실제 날짜 사용
-                date=pred_date,  # 동일한 날짜
+                day=i+1,
+                date=pred_date,
                 return_rate=return_rate,
                 price=price
             ))
         
-        print('req, result : ', req, result)
+        logger.info(f"예측 완료 - Ticker: {result['ticker']}, Last price: {result['last_price']}")
+        logger.debug(f"예측 결과 상세: {result}")
+        
+        # 투자 분석 결과를 Pydantic 모델로 변환
+        analysis_data = result['investment_analysis']
+        investment_analysis = InvestmentAnalysis(
+            recommendation=analysis_data['recommendation'],
+            action=analysis_data['action'],
+            confidence=analysis_data['confidence'],
+            score=analysis_data['score'],
+            max_score=analysis_data['max_score'],
+            min_score=analysis_data['min_score'],
+            signals=analysis_data['signals'],
+            metrics=InvestmentMetrics(**analysis_data['metrics']),
+            risk_metrics=RiskMetrics(**analysis_data['risk_metrics'])
+        )
         
         return PredictResponse(
             ticker=result['ticker'],
@@ -184,13 +270,17 @@ def predict(req: PredictRequest):
             train_data_count=result['train_data_count'],
             feature_count=result['feature_count'],
             predicted=predicted_points,
+            investment_analysis=investment_analysis,
             chart_full=result.get('chart_full'),
             chart_30d=result.get('chart_30d')
         )
         
     except ValueError as e:
+        logger.warning(f"잘못된 요청 파라미터: {e}")
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
+        logger.error(f"예측 중 예상치 못한 오류 발생: {e}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"예측 중 오류가 발생했습니다: {str(e)}")
 
 
@@ -202,4 +292,6 @@ if __name__ == "__main__":
         host="0.0.0.0",
         port=8000,
         reload=True,
+        log_level="info",
+        access_log=True
     )
