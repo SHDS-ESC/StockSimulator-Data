@@ -75,3 +75,11 @@ class MessageResponse(BaseModel):
 class SchedulerStatusResponse(BaseModel):
     running: bool
     jobs: List[dict]
+
+
+class StockPredictionRequest(BaseModel):
+    ticker: str = Field(..., description="주식 티커 심볼")
+    train_days: int = Field(500, description="훈련 데이터 기간 (일)")
+    predict_steps: int = Field(5, description="예측 기간 (일)")
+    today: Optional[date] = Field(None, description="기준일 (기본: 오늘)")
+    save_image: bool = Field(True, description="차트 이미지 생성 여부")

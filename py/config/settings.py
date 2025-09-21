@@ -31,6 +31,10 @@ class Settings:
         
     def setup_logging(self):
         """로깅 설정"""
+        # 기존 핸들러 제거
+        for handler in logging.root.handlers[:]:
+            logging.root.removeHandler(handler)
+            
         logging.basicConfig(
             level=getattr(logging, self.log_level),
             format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -39,6 +43,14 @@ class Settings:
                 logging.FileHandler(self.log_file, encoding='utf-8')
             ]
         )
+        
+        # FastAPI와 uvicorn 로거 설정
+        uvicorn_logger = logging.getLogger("uvicorn.access")
+        uvicorn_logger.setLevel(logging.INFO)
+        
+        fastapi_logger = logging.getLogger("fastapi")
+        fastapi_logger.setLevel(logging.INFO)
+        
         return logging.getLogger(__name__)
 
 

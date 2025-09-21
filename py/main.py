@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from .config.settings import settings
-from .controllers import health_controller, cache_controller, ticker_controller, stock_controller
+from .controllers import health_controller, scheduler_controller, stock_controller
 from .services.scheduler_service import SchedulerService
 from .services.database_service import DatabaseService
 
@@ -17,6 +17,17 @@ logger = settings.setup_logging()
 
 # FastAPI 앱 생성
 app = FastAPI(title="StockSimulator API", version="0.1.0")
+
+# 요청 로깅 미들웨어
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    logger.info(f"📥 요청: {request.method} {request.url}")
+    logger.info(f"📥 헤더: {dict(request.headers)}")
+    
+    response = await call_next(request)
+    
+    logger.info(f"📤 응답: {response.status_code}")
+    return response
 
 # 전역 예외 핸들러
 @app.exception_handler(Exception)
@@ -78,9 +89,15 @@ def get_scheduler_service():
 
 # 라우터 등록 - 모든 라우트 관리
 app.include_router(health_controller.router)
-app.include_router(cache_controller.router)
-app.include_router(ticker_controller.router)
+app.include_router(scheduler_controller.router)
 app.include_router(stock_controller.router)
+
+# 등록된 라우트 로깅
+logger.info("📋 등록된 API 라우트:")
+for route in app.routes:
+    if hasattr(route, 'path') and hasattr(route, 'methods'):
+        methods = ', '.join(route.methods)
+        logger.info(f"  {methods} {route.path}")
 
 
 # 앱 시작 이벤트

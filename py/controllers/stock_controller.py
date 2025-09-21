@@ -4,11 +4,11 @@ from fastapi import APIRouter, HTTPException, Depends, Query
 from typing import Optional
 import datetime as dt
 
-from ..models.dto import MessageResponse, StockPredictionResponse
+from ..models.dto import MessageResponse, StockPredictionResponse, TickersResponse, StockPredictionRequest
 from ..services.database_service import DatabaseService
 from ..services.stock_service import StockService
 
-router = APIRouter(prefix="/stock", tags=["stock"])
+router = APIRouter(tags=["stock"])
 
 
 def get_db_service():
@@ -27,23 +27,19 @@ def get_stock_service(db_service: DatabaseService = Depends(get_db_service)):
     return StockService(db_service)
 
 
-@router.post("/predict/{ticker}", response_model=StockPredictionResponse)
+@router.post("/predict", response_model=StockPredictionResponse)
 def predict_stock(
-    ticker: str,
-    train_days: int = Query(500, description="훈련 데이터 기간 (일)"),
-    predict_steps: int = Query(5, description="예측 기간 (일)"),
-    today: Optional[dt.date] = Query(None, description="기준일 (기본: 오늘, 입력 형식 : yyyy-mm-dd)"),
-    save_image: bool = Query(True, description="차트 이미지 생성 여부"),
+    request: StockPredictionRequest,
     stock_service: StockService = Depends(get_stock_service)
 ):
     """주식 가격 예측"""
     try:
         result = stock_service.predict_stock(
-            ticker=ticker,
-            train_days=train_days,
-            predict_steps=predict_steps,
-            today=today,
-            save_image=save_image
+            ticker=request.ticker,
+            train_days=request.train_days,
+            predict_steps=request.predict_steps,
+            today=request.today,
+            save_image=request.save_image
         )
         
         return StockPredictionResponse(**result)
@@ -54,7 +50,7 @@ def predict_stock(
         raise HTTPException(status_code=500, detail=f"예측 실패: {str(e)}")
 
 
-@router.get("/available-tickers")
+@router.get("/tickers", response_model=TickersResponse)
 def get_available_tickers(db_service: DatabaseService = Depends(get_db_service)):
     """사용 가능한 티커 목록 조회"""
     try:
@@ -67,10 +63,10 @@ def get_available_tickers(db_service: DatabaseService = Depends(get_db_service))
         # stock 테이블에서 티커 목록 조회
         tickers = db_service.stock_df['ticker'].tolist()
         
-        return {
-            "tickers": sorted(tickers),
-            "count": len(tickers)
-        }
+        return TickersResponse(
+            tickers=sorted(tickers),
+            count=len(tickers)
+        )
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"티커 목록 조회 실패: {str(e)}")
