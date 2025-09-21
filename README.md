@@ -101,8 +101,20 @@ curl -X POST http://localhost:8000/predict -H "Content-Type: application/json" -
 
 ## 파일 구조
 
-- `py/fastapi_app.py`: FastAPI 메인 애플리케이션
-- `py/stock_predictor.py`: 주식 예측 모델 및 데이터베이스 서비스
+### 🆕 새로운 구조 (현재 사용)
+- `py/main.py`: FastAPI 메인 애플리케이션 (라우트 관리)
+- `py/controllers/`: API 컨트롤러들
+  - `stock_controller.py`: 주식 예측 API
+  - `cache_controller.py`: 캐시 관리 API
+  - `health_controller.py`: 헬스 체크 API
+- `py/services/`: 비즈니스 로직 서비스들
+  - `stock_service.py`: 주식 예측 메인 서비스
+  - `database_service.py`: 데이터베이스 서비스
+  - `prediction_service.py`: 머신러닝 모델 서비스
+  - `analysis_service.py`: 투자 분석 서비스
+  - `chart_service.py`: 차트 생성 서비스
+  - `scheduler_service.py`: 스케줄러 서비스
+- `py/models/`: 데이터 전송 객체 (DTO)
 - `ipynb/stock_prediction_clean.ipynb`: 원본 노트북 (모델 검증용)
 - `requirements.txt`: Python 의존성 목록
 
