@@ -1,6 +1,7 @@
 """주식 예측 컨트롤러"""
 
 from fastapi import APIRouter, HTTPException, Depends, Query
+import logging
 from typing import Optional
 import datetime as dt
 
@@ -9,6 +10,7 @@ from ..services.database_service import DatabaseService
 from ..services.stock_service import StockService
 
 router = APIRouter(tags=["stock"])
+logger = logging.getLogger(__name__)
 
 
 def get_db_service():
@@ -34,19 +36,28 @@ def predict_stock(
 ):
     """주식 가격 예측"""
     try:
+        logger.info(
+            "Predict request: ticker=%s, train_days=%s, predict_steps=%s, today=%s, save_image=%s, window_size=%s, step_size=%s, max_training_days=%s",
+            request.ticker, request.train_days, request.predict_steps, request.today, request.save_image, request.window_size, request.step_size, request.max_training_days
+        )
         result = stock_service.predict_stock(
             ticker=request.ticker,
             train_days=request.train_days,
             predict_steps=request.predict_steps,
             today=request.today,
-            save_image=request.save_image
+            save_image=request.save_image,
+            window_size=request.window_size,
+            step_size=request.step_size,
+            max_training_days=request.max_training_days
         )
         
         return StockPredictionResponse(**result)
         
     except ValueError as e:
+        logger.exception("Predict ValueError: %s", e)
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
+        logger.exception("Predict failed: %s", e)
         raise HTTPException(status_code=500, detail=f"예측 실패: {str(e)}")
 
 

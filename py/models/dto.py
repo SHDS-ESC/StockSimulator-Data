@@ -83,3 +83,6 @@ class StockPredictionRequest(BaseModel):
     predict_steps: int = Field(5, description="예측 기간 (일)")
     today: Optional[date] = Field(None, description="기준일 (기본: 오늘)")
     save_image: bool = Field(True, description="차트 이미지 생성 여부")
+    window_size: int = Field(25, description="학습 윈도우 크기 (일)")
+    step_size: int = Field(3, description="슬라이딩 윈도우 스텝 크기 (일)")
+    max_training_days: int = Field(200, description="최대 학습 일수")
