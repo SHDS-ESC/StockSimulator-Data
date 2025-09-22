@@ -40,10 +40,10 @@ set DB_PWD=teamesc
 ### 3. API 서버 실행
 ```bash
 # 개발 모드 (자동 재시작)
-uvicorn py.fastapi_app:app --host 0.0.0.0 --port 8000 --reload
+uvicorn py.main:app --host 0.0.0.0 --port 8000 --reload
 
 # 또는 직접 실행
-python -m py.fastapi_app
+python -m py.main
 ```
 
 서버 실행 후 다음 URL들을 확인할 수 있습니다:
