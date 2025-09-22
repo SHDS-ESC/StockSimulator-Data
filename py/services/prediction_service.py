@@ -20,10 +20,11 @@ class StockPredictor:
     
     def __init__(self, model=None, use_scaler=True, random_state=42):
         self.model = model if model else RandomForestRegressor(
-            n_estimators=200, 
-            max_depth=15,
-            min_samples_split=5,
-            min_samples_leaf=2,
+            n_estimators=500,
+            max_depth=20,
+            max_features="sqrt",
+            min_samples_split=2,
+            min_samples_leaf=5,
             random_state=random_state
         )
         self.use_scaler = use_scaler
@@ -185,8 +186,37 @@ class StockPredictor:
             return_pred = self.model.predict(features_scaled)[0]
             predictions.append(return_pred)
             
-            # 다음 스텝을 위한 피처 업데이트 (간단한 방식)
-            current_features = current_features.copy()
+            # 다음 스텝을 위한 피처 업데이트 (간단한 recursive 방식)
+            # 1) close 업데이트: 예측 수익률을 적용해 다음 시점의 종가 추정
+            if 'close' in current_features.columns:
+                prev_close = float(current_features['close'].iloc[0])
+                next_close = prev_close * (1 + return_pred / 100.0)
+                current_features.loc[:, 'close'] = next_close
+            
+            # 2) 즉시 계산 가능한 파생 피처 갱신
+            # - price_to_sma_*: 기존 sma를 고정값으로 보고 비율만 갱신
+            for col in list(current_features.columns):
+                if col.startswith('price_to_sma_'):
+                    sma_col = col.replace('price_to_sma_', 'sma_')
+                    if sma_col in current_features.columns and current_features[sma_col].notna().all():
+                        sma_val = float(current_features[sma_col].iloc[0])
+                        if sma_val != 0:
+                            current_features.loc[:, col] = next_close / sma_val
+            
+            # - 볼린저 포지션: 상하단선은 고정값으로 보고 포지션만 갱신
+            if all(c in current_features.columns for c in ['bb_upper', 'bb_lower']):
+                upper = float(current_features['bb_upper'].iloc[0])
+                lower = float(current_features['bb_lower'].iloc[0])
+                denom = (upper - lower)
+                if denom != 0:
+                    current_features.loc[:, 'bb_position'] = (next_close - lower) / denom
+            
+            # - 1일 수익률 피처가 있으면 예측값으로 갱신 (단위: %)
+            if 'return_1d' in current_features.columns:
+                current_features.loc[:, 'return_1d'] = return_pred
+            
+            # 기타 장기 롤링 지표(RSI, MACD 등)는 과거 히스토리가 필요하므로 보수적으로 고정 유지
+            # 필요한 경우 추후 히스토리 버퍼를 도입해 정밀 갱신 가능
             
         return predictions
     
@@ -194,7 +224,7 @@ class StockPredictor:
         """수익률을 가격으로 변환"""
         prices = []
         current_price = base_price
-        
+        print(f"current_price = {current_price}")
         for return_rate in returns:
             current_price = current_price * (1 + return_rate / 100)
             prices.append(current_price)
