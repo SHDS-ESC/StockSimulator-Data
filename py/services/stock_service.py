@@ -68,7 +68,8 @@ class StockService:
         #     print(f"### today_idx:{today_idx} is not equal today_idx_max:{today_idx_max}")
 
         # TODO : 영업일 기준과 학습 시작일 지정 모드 구분지어 개발
-        today_idx = stock_data.index[stock_data.index <= today_dt].max() # Boolean Indexing : 조건문으로 .loc 대체.. 혹은 get_loc과 .iloc으로 해도 됨.
+        today_idx_dt = stock_data.index[stock_data.index <= today_dt].max() # Boolean Indexing : 조건문으로 .loc 대체.. 혹은 get_loc과 .iloc으로 해도 됨.
+        today_idx = stock_data.index.get_loc(today_idx_dt)
         start_idx = max(0, today_idx - train_days) # train_days => 영업일 기준임. today_idx를 빼고 n일 전부터 하루 전까지 학습 데이터로 사용
         end_idx = min(today_idx + predict_steps, len(stock_data) - 1) # predict_steps => 오늘로부터 예측일. 존재한다면 영업일 기준으로 설정
 
@@ -84,19 +85,20 @@ class StockService:
         # 4. 학습 피처 & 예측 피처(일반 수익률, 로그 수익률) 준비: (start-50) ~ end 구간만 사용해 특성 생성 후 => 이평선 구하는 로직에서 NAN이 발생하는데, dropna에서 학습 데이터 빠지는 것을 방지하려고
         # 생성된 데이터에서 start_str ~ end_str 범위만 재슬라이싱하여 사용
         buffer_start_idx = max(0, start_idx - 50)
-        buffer_slice = stock_data.iloc[buffer_start_idx:end_idx+1]
-        print(f"buffer slice: {buffer_slice.index[0]} ~ {buffer_slice.index[-1]} (len={len(buffer_slice)})")
+        buffer_slice = stock_data.iloc[buffer_start_idx:end_idx+2]
+        print(f"buffer slice: {buffer_slice.index[0]} ~ {buffer_slice.index[-1]} (len={len(buffer_slice)}) # end_idx+2한 이유는 dropna 때문..")
 
         # 피처 만들기..
         prepared_data = predictor.prepare_returns(buffer_slice)
-        stock_data = prepared_data.iloc[start_idx:end_idx+1]
+        stock_data = prepared_data.loc[start_str:end_str]
         
         print(f"prepared stock_data len: {len(stock_data)}")
         print(f"stock_data.head(): \n{stock_data.head()}")
         print(f"stock_data.tail(): \n{stock_data.tail()}")
 
         # 어제까지의 데이터 -> 학습용
-        train_data = stock_data.iloc[ : today_idx]
+        today_idx = stock_data.index.get_loc(today_idx_dt)
+        train_data = stock_data.iloc[ : today_idx+1]
         print(f"훈련 데이터: {len(train_data)}일 ({train_data.index[0]} ~ {train_data.index[-1]})")
 
         # 오늘부터 ~ 예측일까지의 데이터 -> 검증용 (미래 시제는 검증 못함)
@@ -113,7 +115,7 @@ class StockService:
         print(f"price_predictions: {price_predictions}")
         
         # 10. 예측 날짜 계산 (가용 구간 기준)
-        pred_dates = self._calculate_prediction_dates(today, predict_steps, train_data)
+        pred_dates = self._calculate_prediction_dates(today, predict_steps, stock_data)
         # pred_dates = valid_data.index
         print(f"pred_dates={pred_dates}")
         
@@ -199,30 +201,24 @@ class StockService:
             pred_col = predictor.get_predict_column()
 
             X_train = train_df[feature_cols].copy()
+            # y는 1D Series로 사용 (스칼라 메트릭 비교 용이)
             y_train = train_df[pred_col].copy()
+            if isinstance(y_train, pd.DataFrame):
+                y_train = y_train.squeeze()
 
             # 모델 학습
             predictor.train(X_train, y_train)
 
-            # val 검증
-            X_val = val_df[feature_cols].copy()
-            y_val = val_df[pred_col].copy() # 실제 값
-            pred = predictor.predict_next_returns(X_val, steps=1) # 예측한 값
-
-            # 검증 성능 (스칼라 비교)
-            mae_score = self._calculate_mae(y_val, pred)
-            rmse_score = self._calculate_rmse(y_val, pred)
-            direction_acc = 1.0 if np.sign(pred) == np.sign(y_val) else 0.0
-
             # 1-step 검증: 마지막 학습 피처로 1일 예측
-            # last_features = X_train.iloc[[-1]]
-            # val_pred_1 = predictor.predict_next_returns(last_features, steps=1)
-            # y_true_1 = val_df[pred_col].values  # 길이 1
-
+            pred = predictor.predict_next_returns(X_train.iloc[[-1]], steps=1)
+            # pred는 길이 1의 리스트/ndarray이므로 스칼라로 변환
+            pred_scalar = float(np.asarray(pred).ravel()[0])
+            
             # 검증 성능 (스칼라 비교)
-            # mae_score = self._calculate_mae(y_true_1, val_pred_1)
-            # rmse_score = self._calculate_rmse(y_true_1, val_pred_1)
-            # direction_acc = 1.0 if np.sign(val_pred_1[0]) == np.sign(y_true_1[0]) else 0.0
+            y_true_scalar = float(np.asarray(y_train.iloc[-1]).ravel()[0])
+            mae_score = self._calculate_mae(np.array([y_true_scalar]), np.array([pred_scalar]))
+            rmse_score = self._calculate_rmse(np.array([y_true_scalar]), np.array([pred_scalar]))
+            direction_acc = 1.0 if np.sign(pred_scalar) == np.sign(y_true_scalar) else 0.0
 
             validation_scores.append(mae_score)
             performance_metrics.append({
@@ -232,17 +228,33 @@ class StockService:
             })
 
             # 실제 예측: recursive로 predict_steps일 예측
-            return_predictions = predictor.predict_next_returns(last_features, steps=predict_steps)
+            X_val = val_df[feature_cols].copy()
+            y_val = val_df[pred_col].copy() # 실제 값(사용 시 주의: 단일 값)
+            if isinstance(y_val, pd.DataFrame):
+                y_val = y_val.squeeze()
+            # 히스토리 버퍼(window_data)를 넘겨 지표를 스텝마다 재계산하며 예측
+            return_predictions = predictor.predict_next_returns(
+                X_val, steps=predict_steps, history_df=window_data.copy()
+            )
 
             # 수익률을 가격으로 변환
-            last_price = train_df['close'].iloc[-1]
+            last_price = window_data['close'].iloc[-1]
             price_predictions = predictor.convert_returns_to_prices(last_price, return_predictions)
 
             all_predictions.append(price_predictions)
 
-            print(f"train index range : {train_df.index[0]} - {train_df.index[-1]}")
-            print(f"윈도우 {i//step_size + 1}: MAE={mae_score:.4f}, RMSE={rmse_score:.4f}, 방향정확도={direction_acc:.3f}")
-            print(f"@val_pred_1: {val_pred_1}\n@return_predictions: {return_predictions}\n@y_true_1: {y_true_1}")
+            window_no = i // step_size + 1
+            start_dt, end_dt = train_df.index[0], train_df.index[-1]
+            # 1-step 결과 요약
+            print(f"[Window {window_no}] {start_dt} ~ {end_dt}")
+            print(f"  1-step: pred={pred_scalar:.6f}, true={y_true_scalar:.6f}, MAE={mae_score:.6f}, RMSE={rmse_score:.6f}, DirAcc={direction_acc:.3f}")
+
+            # 멀티스텝 결과 요약
+            steps_len = len(return_predictions) if hasattr(return_predictions, '__len__') else predict_steps
+            ret_first = return_predictions[0] if steps_len > 0 else None
+            ret_last = return_predictions[-1] if steps_len > 0 else None
+            print(f"  multi-step: steps={steps_len}, rtn_first={ret_first:.6f} rtn_last={ret_last:.6f}")
+            print(f"  base_price={last_price:.4f}, history=on")
         
         # 예측 결과 검증
         if not all_predictions:
