@@ -26,12 +26,12 @@ class ChartService:
     
     def create_prediction_charts(self, ticker, today, price_predictions, close_prices, pred_dates, metadata=None):
         """예측 차트 생성"""
-        print('create charts\nclose_prices', close_prices.tail(len(pred_dates)))
-        print(f'price_predictions {price_predictions}')
+        # print('create charts\nclose_prices', close_prices.tail(len(pred_dates)))
+        # print(f'price_predictions {price_predictions}')
         
         try:
-            print(f"🔍 pred_dates 타입: {type(pred_dates[0])}")
-            print(f"🔍 close_prices.index 타입: {type(close_prices.index[0])}")
+            # print(f"🔍 pred_dates 타입: {type(pred_dates[0])}")
+            # print(f"🔍 close_prices.index 타입: {type(close_prices.index[0])}")
             print(f"🔍 예측 날짜들: {pred_dates}")
 
             # 전체 차트 생성 (다운샘플링 적용)
