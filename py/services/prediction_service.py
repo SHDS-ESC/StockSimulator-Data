@@ -81,9 +81,9 @@ class StockPredictor:
         df_temp['bb_lower'] = bb_sma - (bb_std_val * bb_std)
         df_temp['bb_position'] = (df_temp['close'] - df_temp['bb_lower']) / (df_temp['bb_upper'] - df_temp['bb_lower'])
         
-        # 수익률 피처
+        # 수익률 피처 (단위: 소수)
         for period in [1, 3, 5, 10]:
-            df_temp[f'return_{period}d'] = (df_temp['close'] / df_temp['close'].shift(period) - 1) * 100
+            df_temp[f'return_{period}d'] = (df_temp['close'] / df_temp['close'].shift(period) - 1)
         
         # 변동성
         for period in [10, 20]:
@@ -136,7 +136,7 @@ class StockPredictor:
         df_temp = self.calculate_technical_indicators(df_temp)
         df_temp = self.add_engineered_features(df_temp)
         
-        # 타겟 변수 생성 (다음날 수익률)
+        # 타겟 변수 생성 (다음날 수익률, 단위: 소수)
         # shift(-1)은 아래행을 위로 끌어 올리는 것. 즉, 내일의 종가 / 오늘의 종가 == 내일 수익률 을 y로 두고
         # x로는 오늘의 피처 변수들을 두는 것. 로그 수익률에 -1을 하지 않는건, np.log(내일 종가) - np.log(오늘 종가) == np.log(내일종가/오늘종가) 이므로...
         df_temp['simple_rtn'] = (df_temp['close'].shift(-1) / df_temp['close'] - 1)
@@ -149,13 +149,18 @@ class StockPredictor:
 
     # simple_rtn, log_rtn
     def get_predict_column(self):
-        # return df['log_rtn']
-        return ['simple_rtn']
+        # 'simple_rtn' 또는 'log_rtn' 중 선택 (단일 컬럼명 문자열 반환)
+        return 'simple_rtn'
 
 
     def get_feature_columns(self, df):
         """피처 컬럼 선택"""
-        exclude_cols = ['report_id', 'report_date', 'stock_id', 'close', 'simple_rtn', 'log_rtn']
+        # OHLC 및 타깃 컬럼 제외(모델 입력은 정규화 파생 위주)
+        exclude_cols = [
+            'report_id', 'report_date', 'stock_id',
+            'open', 'high', 'low', 'close',
+            'simple_rtn', 'log_rtn'
+        ]
         feature_cols = [col for col in df.columns if col not in exclude_cols]
         return feature_cols
     
@@ -178,13 +183,17 @@ class StockPredictor:
         
         return self
     
-    def predict_next_returns(self, X_last, steps=5):
+    def predict_next_returns(self, X_last, steps=5, history_df=None):
         """미래 수익률 예측"""
         if self.feature_columns is None:
             raise ValueError("모델이 학습되지 않았습니다.")
         
         predictions = []
         current_features = X_last.copy()
+        use_history = history_df is not None and isinstance(history_df, pd.DataFrame) and len(history_df) > 0
+        if use_history:
+            history = history_df.copy()
+            # history는 이미 외부에서 피처가 계산된 상태(prepare_returns)라고 가정
         
         for step in range(steps):
             # 현재 피처로 수익률 예측
@@ -196,37 +205,65 @@ class StockPredictor:
             return_pred = self.model.predict(features_scaled)[0]
             predictions.append(return_pred)
             
-            # 다음 스텝을 위한 피처 업데이트 (간단한 recursive 방식)
-            # 1) close 업데이트: 예측 수익률을 적용해 다음 시점의 종가 추정
-            if 'close' in current_features.columns:
-                prev_close = float(current_features['close'].iloc[0])
-                next_close = prev_close * (1 + return_pred / 100.0)
-                current_features.loc[:, 'close'] = next_close
-            
-            # 2) 즉시 계산 가능한 파생 피처 갱신
-            # - price_to_sma_*: 기존 sma를 고정값으로 보고 비율만 갱신
-            for col in list(current_features.columns):
-                if col.startswith('price_to_sma_'):
-                    sma_col = col.replace('price_to_sma_', 'sma_')
-                    if sma_col in current_features.columns and current_features[sma_col].notna().all():
-                        sma_val = float(current_features[sma_col].iloc[0])
-                        if sma_val != 0:
-                            current_features.loc[:, col] = next_close / sma_val
-            
-            # - 볼린저 포지션: 상하단선은 고정값으로 보고 포지션만 갱신
-            if all(c in current_features.columns for c in ['bb_upper', 'bb_lower']):
-                upper = float(current_features['bb_upper'].iloc[0])
-                lower = float(current_features['bb_lower'].iloc[0])
-                denom = (upper - lower)
-                if denom != 0:
-                    current_features.loc[:, 'bb_position'] = (next_close - lower) / denom
-            
-            # - 1일 수익률 피처가 있으면 예측값으로 갱신 (단위: %)
-            if 'return_1d' in current_features.columns:
-                current_features.loc[:, 'return_1d'] = return_pred
-            
-            # 기타 장기 롤링 지표(RSI, MACD 등)는 과거 히스토리가 필요하므로 보수적으로 고정 유지
-            # 필요한 경우 추후 히스토리 버퍼를 도입해 정밀 갱신 가능
+            # 다음 스텝을 위한 피처 업데이트
+            if use_history:
+                # 1) 예측 close를 히스토리에 추가
+                last_row = history.iloc[[-1]].copy()
+                prev_close = float(last_row['close'].iloc[0]) if 'close' in last_row.columns else None
+                next_close = prev_close * (1 + return_pred) if prev_close is not None else None
+                new_row = last_row.copy()
+                if next_close is not None:
+                    new_row.loc[:, 'close'] = next_close
+                # open/high/low/volume은 보수적으로 직전값 유지(없으면 생성하지 않음)
+                history = pd.concat([history, new_row], axis=0)
+
+                # 2) close 기반 지표 재계산(마지막 행만)
+                # SMA 및 price_to_sma
+                for period in [5, 10, 20, 50]:
+                    sma_col = f'sma_{period}'
+                    history.loc[:, sma_col] = history['close'].rolling(window=period, min_periods=period).mean()
+                    pts_col = f'price_to_sma_{period}'
+                    if sma_col in history.columns:
+                        sma_vals = history[sma_col]
+                        history.loc[:, pts_col] = history['close'] / sma_vals
+
+                # 볼린저 밴드 및 포지션
+                bb_period = 20
+                bb_std = 2
+                bb_sma = history['close'].rolling(window=bb_period, min_periods=bb_period).mean()
+                bb_std_val = history['close'].rolling(window=bb_period, min_periods=bb_period).std()
+                history.loc[:, 'bb_upper'] = bb_sma + (bb_std_val * bb_std)
+                history.loc[:, 'bb_lower'] = bb_sma - (bb_std_val * bb_std)
+                denom = (history['bb_upper'] - history['bb_lower'])
+                history.loc[:, 'bb_position'] = (history['close'] - history['bb_lower']) / denom.replace(0, np.nan)
+
+                # 수익률 및 변동성(단위: 소수)
+                history.loc[:, 'return_1d'] = (history['close'] / history['close'].shift(1) - 1)
+                history.loc[:, 'volatility_10d'] = history['return_1d'].rolling(window=10, min_periods=10).std()
+                history.loc[:, 'volatility_20d'] = history['return_1d'].rolling(window=20, min_periods=20).std()
+
+                # RSI/MACD(가능하면 close만으로 계산)
+                try:
+                    import talib as ta
+                    history.loc[:, 'rsi'] = ta.RSI(history['close'].values, timeperiod=14)
+                    macd, macd_signal, macd_hist = ta.MACD(history['close'].values, fastperiod=12, slowperiod=26, signalperiod=9)
+                    history.loc[:, 'macd'] = macd
+                    history.loc[:, 'macd_signal'] = macd_signal
+                    history.loc[:, 'macd_hist'] = macd_hist
+                except Exception:
+                    pass
+
+                # 3) 다음 루프 입력 피처를 최신 마지막 행으로 교체
+                current_features = history.iloc[[-1]][current_features.columns]
+            else:
+                # 히스토리 없이 운영: close가 있다면 단순 업데이트만 반영
+                if 'close' in current_features.columns:
+                    prev_close = float(current_features['close'].iloc[0])
+                    next_close = prev_close * (1 + return_pred)
+                    current_features.loc[:, 'close'] = next_close
+                # 간단 파생만 유지
+                if 'return_1d' in current_features.columns:
+                    current_features.loc[:, 'return_1d'] = return_pred
             
         return predictions
     
@@ -236,7 +273,7 @@ class StockPredictor:
         current_price = base_price
         print(f"current_price = {current_price}")
         for return_rate in returns:
-            current_price = current_price * (1 + return_rate / 100)
+            current_price = current_price * (1 + return_rate)
             prices.append(current_price)
         
         return prices
