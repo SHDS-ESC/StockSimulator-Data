@@ -37,19 +37,10 @@ def predict_stock(
     """주식 가격 예측"""
     try:
         logger.info(
-            "Predict request: ticker=%s, train_days=%s, predict_steps=%s, today=%s, save_image=%s, window_size=%s, step_size=%s, max_training_days=%s",
-            request.ticker, request.train_days, request.predict_steps, request.today, request.save_image, request.window_size, request.step_size, request.max_training_days
+            "Predict request: ticker=%s, train_days=%s, predict_steps=%s, today=%s, save_image=%s, batch_size=%s, step_size=%s",
+            request.ticker, request.train_days, request.predict_steps, request.today, request.save_image, request.batch_size, request.step_size
         )
-        result = stock_service.predict_stock(
-            ticker=request.ticker,
-            train_days=request.train_days,
-            predict_steps=request.predict_steps,
-            today=request.today,
-            save_image=request.save_image,
-            window_size=request.window_size,
-            step_size=request.step_size,
-            max_training_days=request.max_training_days
-        )
+        result = stock_service.predict_stock(request)
         
         return StockPredictionResponse(**result)
         
@@ -59,6 +50,33 @@ def predict_stock(
     except Exception as e:
         logger.exception("Predict failed: %s", e)
         raise HTTPException(status_code=500, detail=f"예측 실패: {str(e)}")
+
+
+@router.post("/predict-test")#, response_model=StockPredictionResponse)
+def predict_stock_test(
+        request: StockPredictionRequest,
+        stock_service: StockService = Depends(get_stock_service)
+):
+    """주식 가격 예측"""
+    today = request.today
+    for offset in range(0, 30, 2):
+        request.today = today + dt.timedelta(days=offset)
+        try:
+            logger.info(
+                "Predict request: ticker=%s, train_days=%s, predict_steps=%s, today=%s, save_image=%s, batch_size=%s, step_size=%s",
+                request.ticker, request.train_days, request.predict_steps, request.today, request.save_image,
+                request.batch_size, request.step_size
+            )
+            result = stock_service.predict_stock(request)
+
+            # return StockPredictionResponse(**result)
+
+        except ValueError as e:
+            logger.exception("Predict ValueError: %s", e)
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            logger.exception("Predict failed: %s", e)
+            raise HTTPException(status_code=500, detail=f"예측 실패: {str(e)}")
 
 
 @router.get("/tickers", response_model=TickersResponse)

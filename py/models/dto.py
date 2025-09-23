@@ -48,7 +48,7 @@ class StockPredictionResponse(BaseModel):
     feature_count: int
     investment_analysis: InvestmentAnalysis
     chart_full: Optional[str] = Field(None, description="전체 데이터 차트 (base64)")
-    chart_30d: Optional[str] = Field(None, description="최근 30일 차트 (base64)")
+    chart_brief: Optional[str] = Field(None, description="요약(최근 50일) 차트 (base64)")
 
 
 class HealthResponse(BaseModel):
@@ -79,10 +79,9 @@ class SchedulerStatusResponse(BaseModel):
 
 class StockPredictionRequest(BaseModel):
     ticker: str = Field(..., description="주식 티커 심볼")
-    train_days: int = Field(500, description="훈련 데이터 기간 (일)")
-    predict_steps: int = Field(5, description="예측 기간 (일)")
+    train_days: int = Field(description="훈련 데이터 기간 (일)")
+    predict_steps: int = Field(description="예측 기간 (일)")
     today: Optional[date] = Field(None, description="기준일 (기본: 오늘)")
     save_image: bool = Field(True, description="차트 이미지 생성 여부")
-    window_size: int = Field(25, description="학습 윈도우 크기 (일)")
-    step_size: int = Field(3, description="슬라이딩 윈도우 스텝 크기 (일)")
-    max_training_days: int = Field(200, description="최대 학습 일수")
+    batch_size: Optional[int] = Field(None, description="배치 크기 (일, 기본값: train_days)")
+    step_size: Optional[int] = Field(None, description="슬라이딩 윈도우 스텝 크기 (일, 기본값: train_days)")
