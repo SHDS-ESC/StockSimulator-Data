@@ -124,8 +124,9 @@ class StockPredictor:
             scores.append(mse)
         
         return np.mean(scores), np.std(scores)
-    
-    def prepare_features(self, df):
+
+    # simple_rtn, log_rtn
+    def prepare_returns(self, df):
         """피처 준비"""
         df_temp = df.copy()
         
@@ -136,16 +137,25 @@ class StockPredictor:
         df_temp = self.add_engineered_features(df_temp)
         
         # 타겟 변수 생성 (다음날 수익률)
-        df_temp['target'] = (df_temp['close'].shift(-1) / df_temp['close'] - 1) * 100
-        
+        # shift(-1)은 아래행을 위로 끌어 올리는 것. 즉, 내일의 종가 / 오늘의 종가 == 내일 수익률 을 y로 두고
+        # x로는 오늘의 피처 변수들을 두는 것. 로그 수익률에 -1을 하지 않는건, np.log(내일 종가) - np.log(오늘 종가) == np.log(내일종가/오늘종가) 이므로...
+        df_temp['simple_rtn'] = (df_temp['close'].shift(-1) / df_temp['close'] - 1)
+        df_temp['log_rtn'] = np.log(df_temp['close'].shift(-1) / df_temp['close'])
+
         # NaN 제거
         df_temp = df_temp.dropna()
         
         return df_temp
-    
+
+    # simple_rtn, log_rtn
+    def get_predict_column(self):
+        # return df['log_rtn']
+        return ['simple_rtn']
+
+
     def get_feature_columns(self, df):
         """피처 컬럼 선택"""
-        exclude_cols = ['report_id', 'report_date', 'stock_id', 'target']
+        exclude_cols = ['report_id', 'report_date', 'stock_id', 'close', 'simple_rtn', 'log_rtn']
         feature_cols = [col for col in df.columns if col not in exclude_cols]
         return feature_cols
     

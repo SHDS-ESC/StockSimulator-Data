@@ -21,23 +21,29 @@ class StockService:
         self.db_service = db_service
         self.chart_service = ChartService()
     
-    def predict_stock(self, ticker, train_days=200, predict_steps=5, today=None, save_image=True,
-                     window_size=25, step_size=3, max_training_days=500):
+    def predict_stock(self, request):
         """주식 예측 실행 함수 - 슬라이딩 윈도우 방식"""
         
+        # request에서 파라미터 추출
+        ticker = request.ticker
+        train_days = request.train_days
+        predict_steps = request.predict_steps
+        today = request.today
+        save_image = request.save_image
+        batch_size = request.batch_size
+        step_size = request.step_size
+        
+        # 기본값 설정: batch_size, step_size가 설정되지 않은 경우 train_days와 같은 값으로 설정
+        if batch_size is None:
+            batch_size = train_days
+        if step_size is None:
+            step_size = train_days
         if today is None:
             today = dt.date.today()
-        
-        # 파라미터 검증
-        # if train_days > max_training_days:
-        #     raise ValueError(f"train_days({train_days})는 max_training_days({max_training_days})보다 작아야 합니다")
-        
+
         # 학습 횟수 계산
-        training_count = (train_days - window_size) // step_size + 1
-        # if training_count > 100:
-        #     raise ValueError(f"학습 횟수({training_count})가 너무 많습니다. step_size를 늘리거나 train_days를 줄이세요")
-        
-        print(f"슬라이딩 윈도우 설정: window_size={window_size}, step_size={step_size}, train_days={train_days}")
+        training_count = (train_days - batch_size) // step_size + 1
+        print(f"슬라이딩 윈도우 설정: batch_size={batch_size}, step_size={step_size}, train_days={train_days}")
         print(f"예상 학습 횟수: {training_count}")
         
         # 1. 데이터 로드
@@ -53,51 +59,56 @@ class StockService:
 
         predictor = StockPredictor(model=lgbm)
 
-        # # 3. 사용 데이터 범위 산정 (메모리/시각화 최적화)
+        # 3. 사용 데이터 범위 산정 (메모리/시각화 최적화)
         today_dt = pd.to_datetime(today)
-        today_idx = (abs(stock_data.index - today_dt)).argmin()
-        
-        start_idx = max(0, today_idx - train_days)
-        end_idx = today_idx + predict_steps
-        
+        # today_idx = (abs(stock_data.index - today_dt)).argmin()
+        # # 입력된 날짜보다 작거나 같은 날짜 중 마지막 날짜
+        # today_idx_max = stock_data.index[stock_data.index <= today_dt].max()
+        # if today_idx != stock_data.index[stock_data.index <= today_dt].max():
+        #     print(f"### today_idx:{today_idx} is not equal today_idx_max:{today_idx_max}")
+
+        # TODO : 영업일 기준과 학습 시작일 지정 모드 구분지어 개발
+        today_idx = stock_data.index[stock_data.index <= today_dt].max() # Boolean Indexing : 조건문으로 .loc 대체.. 혹은 get_loc과 .iloc으로 해도 됨.
+        start_idx = max(0, today_idx - train_days) # train_days => 영업일 기준임. today_idx를 빼고 n일 전부터 하루 전까지 학습 데이터로 사용
+        end_idx = min(today_idx + predict_steps, len(stock_data) - 1) # predict_steps => 오늘로부터 예측일. 존재한다면 영업일 기준으로 설정
+
         # 인덱스의 날짜 문자열 보관
-        idx_max = len(stock_data.index) - 1
+        # idx_max = len(stock_data.index) - 1
         today_str = stock_data.index[today_idx].strftime('%Y-%m-%d')
         start_str = stock_data.index[start_idx].strftime('%Y-%m-%d')
-        end_str = stock_data.index[min(end_idx, idx_max)].strftime('%Y-%m-%d')
+        end_str = stock_data.index[end_idx].strftime('%Y-%m-%d')
+        # end_str = stock_data.index[min(end_idx, idx_max)].strftime('%Y-%m-%d')
+
+        print(f"start_idx={start_idx}({start_str}) - today_idx={today_idx}({today_str}) - end_idx={end_idx}({end_str})")
         
-        print(f"start_idx={start_idx}({start_str}), end_idx={end_idx}({end_str}), today_idx={today_idx}({today_str})")
-        
-        # 4. 피처 준비: (start-50) ~ end 구간만 사용해 특성 생성 후
+        # 4. 학습 피처 & 예측 피처(일반 수익률, 로그 수익률) 준비: (start-50) ~ end 구간만 사용해 특성 생성 후 => 이평선 구하는 로직에서 NAN이 발생하는데, dropna에서 학습 데이터 빠지는 것을 방지하려고
         # 생성된 데이터에서 start_str ~ end_str 범위만 재슬라이싱하여 사용
         buffer_start_idx = max(0, start_idx - 50)
         buffer_slice = stock_data.iloc[buffer_start_idx:end_idx+1]
         print(f"buffer slice: {buffer_slice.index[0]} ~ {buffer_slice.index[-1]} (len={len(buffer_slice)})")
-        
-        prepared_data = predictor.prepare_features(buffer_slice)
-        stock_data = prepared_data.loc[start_str:end_str]
-        
-        print(f"prepared sliced len: {len(stock_data)}")
-        print(f"stock_data.head(): {stock_data.head()}")
-        print(f"stock_data.tail(): {stock_data.tail()}")
 
-        # today_dt = pd.to_datetime(today)
-        # 입력된 날짜보다 작거나 같은 날짜 중 마지막 날짜
-        # today_idx = stock_data.index[stock_data.index <= today_dt].max()
+        # 피처 만들기..
+        prepared_data = predictor.prepare_returns(buffer_slice)
+        stock_data = prepared_data.iloc[start_idx:end_idx+1]
+        
+        print(f"prepared stock_data len: {len(stock_data)}")
+        print(f"stock_data.head(): \n{stock_data.head()}")
+        print(f"stock_data.tail(): \n{stock_data.tail()}")
 
-        # 오늘까지의 데이터 -> 학습용
+        # 어제까지의 데이터 -> 학습용
         train_data = stock_data.iloc[ : today_idx]
         print(f"훈련 데이터: {len(train_data)}일 ({train_data.index[0]} ~ {train_data.index[-1]})")
 
-        # 내일부터 ~ 예측일까지의 데이터 -> 검증용 (미래 시제는 검증 못함)
+        # 오늘부터 ~ 예측일까지의 데이터 -> 검증용 (미래 시제는 검증 못함)
         valid_data = stock_data.iloc[today_idx : ]
-        # print(f"검증 데이터: {predict_steps}일 ({valid_data.index[0]} ~ {valid_data.index[-1]})")
-        print(f"valid_data: {valid_data}")
+        print(f"검증 데이터: {len(valid_data)}일 ({valid_data.index[0]} ~ {valid_data.index[-1]})")
+        print(f"valid_data.head(): \n{valid_data.head()}")
+        print(f"valid_data.tail(): \n{valid_data.tail()}")
 
         # 5. 슬라이딩 윈도우 예측 실행
         price_predictions, metrics_summary = self._sliding_window_predict(
             train_data, predictor, predict_steps, 
-            window_size, step_size
+            batch_size, step_size
         )
         print(f"price_predictions: {price_predictions}")
         
@@ -130,7 +141,7 @@ class StockService:
                 'dataset': dataset_label,
                 'created_at': created_at,
                 'params': {
-                    'window_size': window_size,
+                    'batch_size': batch_size,
                     'step_size': step_size,
                     'train_days': train_days,
                     'predict_steps': predict_steps,
@@ -161,7 +172,7 @@ class StockService:
         return result
     
     def _sliding_window_predict(self, train_data, predictor, predict_steps, 
-                               window_size, step_size):
+                               batch_size, step_size):
         """성능 검증이 포함된 슬라이딩 윈도우 예측 실행 (사전 산정된 가용 구간 사용)
 
         Returns:
@@ -173,33 +184,45 @@ class StockService:
         validation_scores = []
         performance_metrics = []
 
-        for i in range(0, len(train_data) - window_size + 1, step_size):
+        for i in range(0, len(train_data) - batch_size + 1, step_size):
             # 현재 윈도우 데이터 선택
-            window_data = train_data.iloc[i:i + window_size]
-            if len(window_data) < window_size:
+            window_data = train_data.iloc[i:i + batch_size]
+            if len(window_data) < batch_size:
                 break
 
-            # 학습/검증 분할: window_size=25라면 24일 학습, 1일 검증
+            # 학습/검증 분할: batch_size=25라면 24일 학습, 1일 검증
             train_df = window_data.iloc[:-1]
             val_df = window_data.iloc[-1:]
 
             # 피처와 타겟 분리 (학습)
             feature_cols = predictor.get_feature_columns(train_df)
+            pred_col = predictor.get_predict_column()
+
             X_train = train_df[feature_cols].copy()
-            y_train = train_df['target'].copy()
+            y_train = train_df[pred_col].copy()
 
             # 모델 학습
             predictor.train(X_train, y_train)
 
-            # 1-step 검증: 마지막 학습 피처로 1일 예측
-            last_features = X_train.iloc[[-1]]
-            val_pred_1 = predictor.predict_next_returns(last_features, steps=1)
-            y_true_1 = val_df['target'].values  # 길이 1
+            # val 검증
+            X_val = val_df[feature_cols].copy()
+            y_val = val_df[pred_col].copy() # 실제 값
+            pred = predictor.predict_next_returns(X_val, steps=1) # 예측한 값
 
             # 검증 성능 (스칼라 비교)
-            mae_score = self._calculate_mae(y_true_1, val_pred_1)
-            rmse_score = self._calculate_rmse(y_true_1, val_pred_1)
-            direction_acc = 1.0 if np.sign(val_pred_1[0]) == np.sign(y_true_1[0]) else 0.0
+            mae_score = self._calculate_mae(y_val, pred)
+            rmse_score = self._calculate_rmse(y_val, pred)
+            direction_acc = 1.0 if np.sign(pred) == np.sign(y_val) else 0.0
+
+            # 1-step 검증: 마지막 학습 피처로 1일 예측
+            # last_features = X_train.iloc[[-1]]
+            # val_pred_1 = predictor.predict_next_returns(last_features, steps=1)
+            # y_true_1 = val_df[pred_col].values  # 길이 1
+
+            # 검증 성능 (스칼라 비교)
+            # mae_score = self._calculate_mae(y_true_1, val_pred_1)
+            # rmse_score = self._calculate_rmse(y_true_1, val_pred_1)
+            # direction_acc = 1.0 if np.sign(val_pred_1[0]) == np.sign(y_true_1[0]) else 0.0
 
             validation_scores.append(mae_score)
             performance_metrics.append({
@@ -217,9 +240,9 @@ class StockService:
 
             all_predictions.append(price_predictions)
 
-            print(f"{train_df.index[0]} - {train_df.index[-1]}", sep=' / ')
+            print(f"train index range : {train_df.index[0]} - {train_df.index[-1]}")
             print(f"윈도우 {i//step_size + 1}: MAE={mae_score:.4f}, RMSE={rmse_score:.4f}, 방향정확도={direction_acc:.3f}")
-            print(f"val_pred_1: {val_pred_1}, return_predictions: {return_predictions}, y_true_1: {y_true_1}")
+            print(f"@val_pred_1: {val_pred_1}\n@return_predictions: {return_predictions}\n@y_true_1: {y_true_1}")
         
         # 예측 결과 검증
         if not all_predictions:
