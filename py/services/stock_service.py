@@ -59,26 +59,27 @@ class StockService:
         training_count = (train_days - batch_size) // step_size + 1
         print(f"슬라이딩 윈도우 설정: batch_size={batch_size}, step_size={step_size}, train_days={train_days}")
         print(f"예상 학습 횟수: {training_count}")
-        
-        # 1. 데이터 로드
-        stock_data = self.db_service.get_stock_data(ticker)
-        
+
         # 2. 모델 초기화
         # warm_start를 사용하는 경우 : 윈도우마다 트리를 추가 학습할 수 있도록 n_estimators=0에서 시작 & warm_start=True
         # 사용하지 않는 경우 : n_estimators 200~1000 지정
-        lgbm = lightgbm.LGBMRegressor(n_estimators=500,
+        lgbm = lightgbm.LGBMRegressor(n_estimators=200,
                                       max_depth=-1,
                                       learning_rate=0.01,
                                       n_jobs=-1,
                                       verbose=-1,
-                                    #   warm_start=True,
-                                    #   num_leaves=63,
-                                    #   min_child_samples=10,
-                                    #   min_split_gain=0.0,
-                                    #   reg_lambda=0.1,
+                                      # warm_start=True,
+                                      # num_leaves=63,
+                                      # min_child_samples=10,
+                                      # min_split_gain=0.0,
+                                      # reg_lambda=0.1,
                                       random_state=42)
 
         predictor = StockPredictor(model=lgbm)
+
+        # 1. 데이터 로드
+        stock_data = self.db_service.get_stock_data(ticker)
+        feature_cols = predictor.get_feature_columns(stock_data)
 
         # 3. 사용 데이터 범위 산정 (메모리/시각화 최적화)
         today_dt = pd.to_datetime(today).date() # 입력된, 전달받은 today (메서드 호출)
@@ -109,8 +110,8 @@ class StockService:
         end_idx = stock_data.index.get_loc(end_str)
 
         print(f"prepared stock_data len: {len(stock_data)}, start_idx={start_idx}({start_str}), end_idx={end_idx}({end_str})")
-        print(f"stock_data.head(): \n{stock_data.head()}")
-        print(f"stock_data.tail(): \n{stock_data.tail()}")
+        print(f"stock_data.head(): \n{stock_data[feature_cols].head()}")
+        print(f"stock_data.tail(): \n{stock_data[feature_cols].tail()}")
 
         # 어제까지의 데이터 -> 학습용
         train_data = stock_data.iloc[ : today_idx]
@@ -119,8 +120,8 @@ class StockService:
         # 오늘부터 ~ 예측일까지의 데이터 -> 검증용 (미래 시제는 검증 못함)
         valid_data = stock_data.iloc[today_idx : ]
         print(f"검증 데이터: {len(valid_data)}일 ({valid_data.index[0]} ~ {valid_data.index[-1]})")
-        print(f"valid_data.head(): \n{valid_data.head()}")
-        print(f"valid_data.tail(): \n{valid_data.tail()}")
+        print(f"valid_data.head(): \n{valid_data[feature_cols].head()}")
+        print(f"valid_data.tail(): \n{valid_data[feature_cols].tail()}")
 
         # 5. 슬라이딩 윈도우 예측 실행
         price_predictions, metrics_summary = self._sliding_window_predict(
@@ -170,6 +171,13 @@ class StockService:
                 metadata=metadata
             )
         
+        # Feature importance 추출
+        feature_importance_data = self._get_feature_importance(predictor, train_data)
+        feature_importance = None
+        if "error" not in feature_importance_data:
+            from ..models.dto import FeatureImportance
+            feature_importance = FeatureImportance(**feature_importance_data)
+        
         result = {
             'ticker': ticker,
             'base_date': today,
@@ -179,6 +187,7 @@ class StockService:
             'prediction_dates': [date.date() if hasattr(date, 'date') else date for date in pred_dates],  # date 객체로 변환
             'train_data_count': len(train_data),  # 사용 데이터 수
             'feature_count': len(predictor.get_feature_columns(train_data)),  # 피처 수
+            'feature_importance': feature_importance,  # 피처 중요도 추가
             'investment_analysis': investment_analysis
         }
         
@@ -187,6 +196,39 @@ class StockService:
             result.update(chart_data)
         
         return result
+    
+    def _get_feature_importance(self, predictor, train_data):
+        """Feature importance 추출"""
+        try:
+            if not hasattr(predictor.model, 'feature_importances_'):
+                return {"error": "모델이 feature importance를 지원하지 않습니다."}
+            
+            # 피처 컬럼 가져오기
+            feature_cols = predictor.get_feature_columns(train_data)
+            
+            if not feature_cols:
+                return {"error": "피처 컬럼을 찾을 수 없습니다."}
+            
+            # Feature importance 추출
+            importances = predictor.model.feature_importances_
+            
+            # 피처명과 중요도를 매핑
+            feature_importance_dict = dict(zip(feature_cols, importances))
+            
+            # 중요도 순으로 정렬 (상위 20개)
+            sorted_features = sorted(feature_importance_dict.items(), 
+                                   key=lambda x: x[1], reverse=True)[:20]
+            
+            return {
+                "top_features": sorted_features,
+                "total_features": len(feature_cols),
+                "importance_sum": float(importances.sum()),
+                "max_importance": float(importances.max()),
+                "min_importance": float(importances.min())
+            }
+            
+        except Exception as e:
+            return {"error": f"Feature importance 추출 실패: {str(e)}"}
     
     def _sliding_window_predict(self, train_data, predictor, predict_steps, 
                                batch_size, step_size):
@@ -217,6 +259,8 @@ class StockService:
             # 피처와 타겟 분리 (학습)
             feature_cols = predictor.get_feature_columns(train_df)
             pred_col = predictor.get_predict_column()
+
+            print(f"feature_cols: {feature_cols}, pred_col: {pred_col}")
 
             X_train = train_df[feature_cols].copy()
             # y는 1D Series로 사용 (스칼라 메트릭 비교 용이)
@@ -256,6 +300,8 @@ class StockService:
             return_predictions = predictor.predict_next_returns(
                 X_val, steps=predict_steps, history_df=window_data.copy()
             )
+
+            print(f"X_val: {X_val}, y_val: {y_val}")
 
             # 1-step 검증을 별도 호출 없이 처리: 실제 recursive 예측의 첫 스텝을 사용
             # - 시점 정합성: X_val(t-1) → r_{t-1→t}
@@ -298,12 +344,6 @@ class StockService:
         # 예측 결과 검증
         if not all_predictions:
             raise ValueError("예측할 수 있는 충분한 데이터가 없습니다")
-        
-        # 생산 예측 정책:
-        # - 서로 다른 기준시점(윈도우)의 예측을 혼합하지 않는다.
-        # - 최종 예측은 "가장 최신 윈도우"(마지막 윈도우)의 멀티스텝 결과를 사용한다.
-        # - 윈도우별 성능(MAE 등)은 리포팅/모니터링/가중치 산정용 참고 값으로만 사용.
-        final_predictions = all_predictions[-1]
 
         # 생산 예측 정책:
         # - 서로 다른 기준시점(윈도우)의 예측을 혼합하지 않는다.

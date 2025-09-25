@@ -37,6 +37,13 @@ class InvestmentAnalysis(BaseModel):
     risk_metrics: RiskMetrics
 
 
+class FeatureImportance(BaseModel):
+    top_features: List[tuple[str, float]]
+    total_features: int
+    importance_sum: float
+    max_importance: float
+    min_importance: float
+
 class StockPredictionResponse(BaseModel):
     ticker: str
     base_date: date
@@ -46,6 +53,7 @@ class StockPredictionResponse(BaseModel):
     prediction_dates: List[date]
     train_data_count: int
     feature_count: int
+    feature_importance: Optional[FeatureImportance] = Field(None, description="피처 중요도 정보")
     investment_analysis: InvestmentAnalysis
     chart_full: Optional[str] = Field(None, description="전체 데이터 차트 (base64)")
     chart_brief: Optional[str] = Field(None, description="요약(최근 50일) 차트 (base64)")
