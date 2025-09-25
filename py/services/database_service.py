@@ -84,10 +84,10 @@ class DatabaseService:
         
         data.volume = data.volume.values.astype(np.float64)
         
-        # report_date를 인덱스로 설정
+        # report_date를 인덱스로 설정 (날짜만, 시간 제외)
         if 'report_date' in data.columns:
             data.set_index('report_date', inplace=True)
-            data.index = pd.to_datetime(data.index)  # datetime으로 변환
+            data.index = pd.to_datetime(data.index).date  # yyyy-mm-dd 날짜만 변환
         
         # 캐시에 저장
         self._stock_data_cache[ticker] = data.copy()
