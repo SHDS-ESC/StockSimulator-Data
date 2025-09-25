@@ -21,6 +21,20 @@ class StockService:
         self.db_service = db_service
         self.chart_service = ChartService()
     
+    def get_available_tickers(self):
+        """사용 가능한 티커 목록 조회"""
+        try:
+            # stock 테이블에서 티커 목록 조회
+            stock_data = self.db_service.load_data_from_db('stock')
+            tickers = stock_data['ticker'].tolist()
+
+            return {
+                'tickers': sorted(tickers),
+                'count': len(tickers)
+            }
+        except Exception as e:
+            raise ValueError(f"티커 목록 조회 실패: {str(e)}")
+
     def predict_stock(self, request):
         """주식 예측 실행 함수 - 슬라이딩 윈도우 방식"""
         
@@ -58,6 +72,10 @@ class StockService:
                                       n_jobs=-1,
                                       verbose=-1,
                                     #   warm_start=True,
+                                    #   num_leaves=63,
+                                    #   min_child_samples=10,
+                                    #   min_split_gain=0.0,
+                                    #   reg_lambda=0.1,
                                       random_state=42)
 
         predictor = StockPredictor(model=lgbm)
@@ -117,8 +135,8 @@ class StockService:
         print(f"pred_dates={pred_dates}")
         
         # 11. 투자 분석 실행
-        # 현재 가격은 train_data의 마지막 close 가격 사용
-        current_price = train_data['close'].iloc[-1]
+        # 현재 가격
+        current_price = stock_data.loc[today_str]['close']
         
         analyzer = InvestmentAnalyzer(
             ticker=ticker,
@@ -190,9 +208,9 @@ class StockService:
             if len(window_data) < batch_size:
                 break
 
-            # 학습/검증 분할: batch_size=25라면 24일 학습, 1일 검증
-            train_df = window_data.iloc[:-1]
-            val_df = window_data.iloc[-1:]
+            # 학습/검증 분할
+            train_df = window_data.iloc[:-20]
+            val_df = window_data.iloc[-20:]
 
             print(f"train_df range: {train_df.index[0]} ~ {train_df.index[-1]}, val_df range: {val_df.index[0]} ~ {val_df.index[-1]}")
 
@@ -206,6 +224,9 @@ class StockService:
             if isinstance(y_train, pd.DataFrame):
                 y_train = y_train.squeeze()
 
+            # 모델 학습 (일반 학습)
+            predictor.train(X_train, y_train)
+            
             # 모델 학습 (warm_start): 윈도우마다 트리를 Δ개 추가하며 이어학습
             # trees_per_window = 200  # 윈도우당 추가 트리 수 (정책)
             # predictor.train(
@@ -214,11 +235,21 @@ class StockService:
             #     warm_start=True, add_estimators=trees_per_window,
             #     early_stopping_rounds=50, eval_metric="l2"
             # )
-            predictor.train(X_train, y_train)
+
+            # # 학습 상태 로깅: 트리 추가 여부/규모 점검
+            # try:
+            #     model_obj = predictor.model
+            #     n_estimators_attr = getattr(model_obj, 'n_estimators_', None)
+            #     best_iter = getattr(model_obj, 'best_iteration_', None)
+            #     booster = getattr(model_obj, 'booster_', None)
+            #     num_trees = booster.num_trees() if booster is not None else None
+            #     print(f"[train status] trees_per_window={trees_per_window} n_estimators_={n_estimators_attr} best_iteration_={best_iter} num_trees={num_trees}")
+            # except Exception as e:
+            #     print(f"[train status] logging error: {e}")
 
             # 실제 예측: recursive로 predict_steps일 예측
-            X_val = val_df[feature_cols].copy()
-            y_val = val_df[pred_col].copy() # 실제 값(사용 시 주의: 단일 값)
+            X_val = val_df[feature_cols].iloc[[-1]].copy()
+            y_val = float(val_df[pred_col].iloc[-1]) # 실제 값(사용 시 주의: 단일 값)
             if isinstance(y_val, pd.DataFrame):
                 y_val = y_val.squeeze()
             # 히스토리 버퍼(window_data)를 넘겨 지표를 스텝마다 재계산하며 예측
@@ -273,8 +304,13 @@ class StockService:
         # - 최종 예측은 "가장 최신 윈도우"(마지막 윈도우)의 멀티스텝 결과를 사용한다.
         # - 윈도우별 성능(MAE 등)은 리포팅/모니터링/가중치 산정용 참고 값으로만 사용.
         final_predictions = all_predictions[-1]
-        
-        
+
+        # 생산 예측 정책:
+        # - 서로 다른 기준시점(윈도우)의 예측을 혼합하지 않는다.
+        # - 최종 예측은 "가장 최신 윈도우"(마지막 윈도우)의 멀티스텝 결과를 사용한다.
+        # - 윈도우별 성능(MAE 등)은 리포팅/모니터링/가중치 산정용 참고 값으로만 사용.
+        final_predictions = all_predictions[-1]
+
         # 성능 요약 출력
         avg_mae = np.mean([m['mae'] for m in performance_metrics])
         avg_rmse = np.mean([m['rmse'] for m in performance_metrics])
@@ -361,7 +397,7 @@ class StockService:
                 remaining_days = predict_steps - len(future_dates_in_data)
             else:
                 # 완전 미래 예측: today부터 시작
-                last_date = today_ts
+                last_date = today
                 remaining_days = predict_steps
             
             # 나머지 날짜들을 영업일 기준으로 생성
