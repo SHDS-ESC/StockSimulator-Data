@@ -13,6 +13,7 @@ from sklearn.preprocessing import StandardScaler
 
 # 기술분석 라이브러리
 import talib as ta
+import lightgbm as lgb
 
 
 class StockPredictor:
@@ -164,13 +165,18 @@ class StockPredictor:
         feature_cols = [col for col in df.columns if col not in exclude_cols]
         return feature_cols
     
-    def train(self, X_train, y_train):
-        """모델 학습"""
+    def train(self, X_train, y_train, X_val=None, y_val=None,
+              warm_start=False, add_estimators=0, early_stopping_rounds=None,
+              eval_metric="l2"):
+        """모델 학습
+        warm_start가 True이면, n_estimators를 add_estimators만큼 증가시켜 이어학습을 시도합니다.
+        early_stopping_rounds가 설정되면 eval_set을 사용해 조기 종료를 활성화합니다.
+        """
         # 피처 컬럼 저장
         self.feature_columns = X_train.columns.tolist()
         
-        # 교차검증
-        cv_mean, cv_std = self.time_series_split_validate(X_train, y_train)
+        # 교차검증(옵션): 필요 시 유지. 현재는 결과를 저장만 하고 사용하지 않음
+        # cv_mean, cv_std = self.time_series_split_validate(X_train, y_train)
         
         # 스케일링
         if self.use_scaler:
@@ -178,8 +184,36 @@ class StockPredictor:
         else:
             X_train_scaled = X_train.values
         
+        eval_set = None
+        if X_val is not None and y_val is not None:
+            if isinstance(y_val, pd.DataFrame):
+                y_val = y_val.squeeze()
+            if self.use_scaler:
+                X_val_scaled = self.scaler.transform(X_val.values)
+            else:
+                X_val_scaled = X_val.values
+            eval_set = [(X_val_scaled, y_val)]
+        
+        # warm_start 이어학습 설정
+        if warm_start:
+            try:
+                current_n = self.model.get_params().get('n_estimators', 0) or 0
+                self.model.set_params(warm_start=True, n_estimators=current_n + int(add_estimators))
+            except Exception:
+                pass
+        
         # 최종 모델 학습
-        self.model.fit(X_train_scaled, y_train)
+        fit_kwargs = {}
+        callbacks = []
+        if eval_set is not None:
+            fit_kwargs['eval_set'] = eval_set
+            fit_kwargs['eval_metric'] = eval_metric
+            if early_stopping_rounds is not None:
+                callbacks.append(lgb.early_stopping(int(early_stopping_rounds), verbose=False))
+        if callbacks:
+            fit_kwargs['callbacks'] = callbacks
+        
+        self.model.fit(X_train_scaled, y_train, **fit_kwargs)
         
         return self
     
@@ -255,6 +289,24 @@ class StockPredictor:
 
                 # 3) 다음 루프 입력 피처를 최신 마지막 행으로 교체
                 current_features = history.iloc[[-1]][current_features.columns]
+                
+                # 디버그 로그: 스텝별 핵심 피처 및 예측값 변화 확인
+                def _safe_val(df, col):
+                    try:
+                        return float(df[col].iloc[0]) if col in df.columns and pd.notna(df[col].iloc[0]) else np.nan
+                    except Exception:
+                        return np.nan
+                dbg = {
+                    'rtn': return_pred,
+                    'prev_close': prev_close if prev_close is not None else np.nan,
+                    'next_close': next_close if next_close is not None else np.nan,
+                    'price_to_sma_20': _safe_val(history.iloc[[-1]], 'price_to_sma_20'),
+                    'bb_position': _safe_val(history.iloc[[-1]], 'bb_position'),
+                    'rsi': _safe_val(history.iloc[[-1]], 'rsi'),
+                    'macd': _safe_val(history.iloc[[-1]], 'macd'),
+                }
+                print(f"[predict_next_returns][step={step+1}] rtn={dbg['rtn']:.10f} prev_close={dbg['prev_close']:.6f} next_close={dbg['next_close']:.6f} p2s20={dbg['price_to_sma_20']:.6f} bbpos={dbg['bb_position']:.6f} rsi={dbg['rsi']:.6f} macd={dbg['macd']:.6f}")
+
             else:
                 # 히스토리 없이 운영: close가 있다면 단순 업데이트만 반영
                 if 'close' in current_features.columns:
@@ -265,6 +317,8 @@ class StockPredictor:
                 if 'return_1d' in current_features.columns:
                     current_features.loc[:, 'return_1d'] = return_pred
             
+                print(f"[predict_next_returns][step={step+1}] rtn={return_pred:.10f} (no-history mode)")
+                
         return predictions
     
     def convert_returns_to_prices(self, base_price, returns):
