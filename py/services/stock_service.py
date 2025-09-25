@@ -50,35 +50,28 @@ class StockService:
         stock_data = self.db_service.get_stock_data(ticker)
         
         # 2. 모델 초기화
+        # warm_start를 사용하는 경우 : 윈도우마다 트리를 추가 학습할 수 있도록 n_estimators=0에서 시작 & warm_start=True
+        # 사용하지 않는 경우 : n_estimators 200~1000 지정
         lgbm = lightgbm.LGBMRegressor(n_estimators=500,
                                       max_depth=-1,
                                       learning_rate=0.01,
                                       n_jobs=-1,
                                       verbose=-1,
+                                    #   warm_start=True,
                                       random_state=42)
 
         predictor = StockPredictor(model=lgbm)
 
         # 3. 사용 데이터 범위 산정 (메모리/시각화 최적화)
-        today_dt = pd.to_datetime(today)
-        # today_idx = (abs(stock_data.index - today_dt)).argmin()
-        # # 입력된 날짜보다 작거나 같은 날짜 중 마지막 날짜
-        # today_idx_max = stock_data.index[stock_data.index <= today_dt].max()
-        # if today_idx != stock_data.index[stock_data.index <= today_dt].max():
-        #     print(f"### today_idx:{today_idx} is not equal today_idx_max:{today_idx_max}")
-
-        # TODO : 영업일 기준과 학습 시작일 지정 모드 구분지어 개발
-        today_idx_dt = stock_data.index[stock_data.index <= today_dt].max() # Boolean Indexing : 조건문으로 .loc 대체.. 혹은 get_loc과 .iloc으로 해도 됨.
-        today_idx = stock_data.index.get_loc(today_idx_dt)
+        today_dt = pd.to_datetime(today).date() # 입력된, 전달받은 today (메서드 호출)
+        today_str= stock_data.index[stock_data.index <= today_dt].max() # Boolean Indexing 사용 -> today가 휴일일 수 있으므로
+        today_idx = stock_data.index.get_loc(today_str)
         start_idx = max(0, today_idx - train_days) # train_days => 영업일 기준임. today_idx를 빼고 n일 전부터 하루 전까지 학습 데이터로 사용
         end_idx = min(today_idx + predict_steps, len(stock_data) - 1) # predict_steps => 오늘로부터 예측일. 존재한다면 영업일 기준으로 설정
 
         # 인덱스의 날짜 문자열 보관
-        # idx_max = len(stock_data.index) - 1
-        today_str = stock_data.index[today_idx].strftime('%Y-%m-%d')
-        start_str = stock_data.index[start_idx].strftime('%Y-%m-%d')
-        end_str = stock_data.index[end_idx].strftime('%Y-%m-%d')
-        # end_str = stock_data.index[min(end_idx, idx_max)].strftime('%Y-%m-%d')
+        start_str = stock_data.index[start_idx]
+        end_str = stock_data.index[end_idx]
 
         print(f"start_idx={start_idx}({start_str}) - today_idx={today_idx}({today_str}) - end_idx={end_idx}({end_str})")
         
@@ -88,17 +81,21 @@ class StockService:
         buffer_slice = stock_data.iloc[buffer_start_idx:end_idx+2]
         print(f"buffer slice: {buffer_slice.index[0]} ~ {buffer_slice.index[-1]} (len={len(buffer_slice)}) # end_idx+2한 이유는 dropna 때문..")
 
-        # 피처 만들기..
+        # 피처 만들기. loc으로 범위 재지정
         prepared_data = predictor.prepare_returns(buffer_slice)
         stock_data = prepared_data.loc[start_str:end_str]
-        
-        print(f"prepared stock_data len: {len(stock_data)}")
+
+        # index 갱신
+        today_idx = stock_data.index.get_loc(today_str)
+        start_idx = stock_data.index.get_loc(start_str)
+        end_idx = stock_data.index.get_loc(end_str)
+
+        print(f"prepared stock_data len: {len(stock_data)}, start_idx={start_idx}({start_str}), end_idx={end_idx}({end_str})")
         print(f"stock_data.head(): \n{stock_data.head()}")
         print(f"stock_data.tail(): \n{stock_data.tail()}")
 
         # 어제까지의 데이터 -> 학습용
-        today_idx = stock_data.index.get_loc(today_idx_dt)
-        train_data = stock_data.iloc[ : today_idx+1]
+        train_data = stock_data.iloc[ : today_idx]
         print(f"훈련 데이터: {len(train_data)}일 ({train_data.index[0]} ~ {train_data.index[-1]})")
 
         # 오늘부터 ~ 예측일까지의 데이터 -> 검증용 (미래 시제는 검증 못함)
@@ -135,7 +132,7 @@ class StockService:
         chart_data = None
         if save_image:
             model_name = type(predictor.model).__name__ if hasattr(predictor, 'model') else 'Model'
-            dataset_label = f"{ticker}-{stock_data.index[0].strftime('%Y-%m-%d')}~{stock_data.index[-1].strftime('%Y-%m-%d')}"
+            dataset_label = f"{ticker}-{stock_data.index[0]}~{stock_data.index[-1]}"
             created_at = dt.date.today().strftime('%Y-%m-%d')
             metadata = {
                 'model_name': model_name,
@@ -151,7 +148,7 @@ class StockService:
                 }
             }
             chart_data = self.chart_service.create_prediction_charts(
-                ticker, today, price_predictions, pd.concat([train_data, valid_data])['close'], pred_dates,
+                ticker, today, price_predictions, stock_data.loc[start_str:end_str]['close'], pred_dates,
                 metadata=metadata
             )
         
@@ -186,6 +183,7 @@ class StockService:
         validation_scores = []
         performance_metrics = []
 
+        print(f"학습 시작.. len(train_data): {len(train_data)}, train_index range: {train_data.index[0]} ~ {train_data.index[-1]}")
         for i in range(0, len(train_data) - batch_size + 1, step_size):
             # 현재 윈도우 데이터 선택
             window_data = train_data.iloc[i:i + batch_size]
@@ -195,6 +193,8 @@ class StockService:
             # 학습/검증 분할: batch_size=25라면 24일 학습, 1일 검증
             train_df = window_data.iloc[:-1]
             val_df = window_data.iloc[-1:]
+
+            print(f"train_df range: {train_df.index[0]} ~ {train_df.index[-1]}, val_df range: {val_df.index[0]} ~ {val_df.index[-1]}")
 
             # 피처와 타겟 분리 (학습)
             feature_cols = predictor.get_feature_columns(train_df)
@@ -206,26 +206,15 @@ class StockService:
             if isinstance(y_train, pd.DataFrame):
                 y_train = y_train.squeeze()
 
-            # 모델 학습
+            # 모델 학습 (warm_start): 윈도우마다 트리를 Δ개 추가하며 이어학습
+            # trees_per_window = 200  # 윈도우당 추가 트리 수 (정책)
+            # predictor.train(
+            #     X_train, y_train,
+            #     X_val=val_df[feature_cols].copy(), y_val=val_df[pred_col].copy(),
+            #     warm_start=True, add_estimators=trees_per_window,
+            #     early_stopping_rounds=50, eval_metric="l2"
+            # )
             predictor.train(X_train, y_train)
-
-            # 1-step 검증: 마지막 학습 피처로 1일 예측
-            pred = predictor.predict_next_returns(X_train.iloc[[-1]], steps=1)
-            # pred는 길이 1의 리스트/ndarray이므로 스칼라로 변환
-            pred_scalar = float(np.asarray(pred).ravel()[0])
-            
-            # 검증 성능 (스칼라 비교)
-            y_true_scalar = float(np.asarray(y_train.iloc[-1]).ravel()[0])
-            mae_score = self._calculate_mae(np.array([y_true_scalar]), np.array([pred_scalar]))
-            rmse_score = self._calculate_rmse(np.array([y_true_scalar]), np.array([pred_scalar]))
-            direction_acc = 1.0 if np.sign(pred_scalar) == np.sign(y_true_scalar) else 0.0
-
-            validation_scores.append(mae_score)
-            performance_metrics.append({
-                'mae': mae_score,
-                'rmse': rmse_score,
-                'direction_accuracy': direction_acc
-            })
 
             # 실제 예측: recursive로 predict_steps일 예측
             X_val = val_df[feature_cols].copy()
@@ -237,6 +226,25 @@ class StockService:
                 X_val, steps=predict_steps, history_df=window_data.copy()
             )
 
+            # 1-step 검증을 별도 호출 없이 처리: 실제 recursive 예측의 첫 스텝을 사용
+            # - 시점 정합성: X_val(t-1) → r_{t-1→t}
+            # - 운영 일관성: 생산 예측과 동일 경로에서 평가
+            if len(return_predictions) < 1:
+                raise ValueError("predict_next_returns가 빈 결과를 반환했습니다")
+            pred1_scalar = float(np.asarray(return_predictions[0]).ravel()[0])
+            y_val_scalar = float(np.asarray(y_val).ravel()[0])
+
+            mae_score = self._calculate_mae(np.array([y_val_scalar]), np.array([pred1_scalar]))
+            rmse_score = self._calculate_rmse(np.array([y_val_scalar]), np.array([pred1_scalar]))
+            direction_acc = 1.0 if np.sign(pred1_scalar) == np.sign(y_val_scalar) else 0.0
+
+            validation_scores.append(mae_score)
+            performance_metrics.append({
+                'mae': mae_score,
+                'rmse': rmse_score,
+                'direction_accuracy': direction_acc
+            })
+
             # 수익률을 가격으로 변환
             last_price = window_data['close'].iloc[-1]
             price_predictions = predictor.convert_returns_to_prices(last_price, return_predictions)
@@ -245,9 +253,9 @@ class StockService:
 
             window_no = i // step_size + 1
             start_dt, end_dt = train_df.index[0], train_df.index[-1]
-            # 1-step 결과 요약
+            # 1-step 결과 요약 (recursive 첫 스텝 기반)
             print(f"[Window {window_no}] {start_dt} ~ {end_dt}")
-            print(f"  1-step: pred={pred_scalar:.6f}, true={y_true_scalar:.6f}, MAE={mae_score:.6f}, RMSE={rmse_score:.6f}, DirAcc={direction_acc:.3f}")
+            print(f"  1-step: pred={pred1_scalar:.6f}, true={y_val_scalar:.6f}, MAE={mae_score:.6f}, RMSE={rmse_score:.6f}, DirAcc={direction_acc:.3f}")
 
             # 멀티스텝 결과 요약
             steps_len = len(return_predictions) if hasattr(return_predictions, '__len__') else predict_steps
@@ -260,11 +268,12 @@ class StockService:
         if not all_predictions:
             raise ValueError("예측할 수 있는 충분한 데이터가 없습니다")
         
-        # 성능 기반 가중치 계산
-        weights = self._calculate_performance_weights(validation_scores)
+        # 생산 예측 정책:
+        # - 서로 다른 기준시점(윈도우)의 예측을 혼합하지 않는다.
+        # - 최종 예측은 "가장 최신 윈도우"(마지막 윈도우)의 멀티스텝 결과를 사용한다.
+        # - 윈도우별 성능(MAE 등)은 리포팅/모니터링/가중치 산정용 참고 값으로만 사용.
+        final_predictions = all_predictions[-1]
         
-        # 가중 앙상블로 최종 예측
-        final_predictions = self._weighted_ensemble(all_predictions, weights)
         
         # 성능 요약 출력
         avg_mae = np.mean([m['mae'] for m in performance_metrics])
@@ -334,11 +343,10 @@ class StockService:
     def _calculate_prediction_dates(self, today, predict_steps, stock_data):
         """예측 날짜 계산"""
         pred_dates = []
-        today_ts = pd.Timestamp(today)
         close_data = stock_data['close']
         
         # close_data에서 today 이후의 날짜들을 찾기
-        future_dates_in_data = close_data.index[close_data.index > today_ts]
+        future_dates_in_data = close_data.index[close_data.index > today]
         
         if len(future_dates_in_data) >= predict_steps:
             # 충분한 미래 날짜가 데이터에 있는 경우 (과거 예측)
