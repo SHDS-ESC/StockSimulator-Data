@@ -96,6 +96,17 @@ class ChartService:
         title = f'{ticker} 주가 예측 (전체 데이터) — {today}'
         if metadata and 'model_name' in metadata:
             title = f"{metadata['model_name']} — {title}"
+        
+        # 파라미터 정보 추가
+        if metadata and 'params' in metadata:
+            p = metadata['params']
+            title += f"\nbatch={p.get('batch_size')}, step={p.get('step_size')}, train_days={p.get('train_days')}, steps={p.get('predict_steps')}"
+            
+        # 모델 파라미터 정보 추가
+        if metadata and 'model_params' in metadata:
+            mp = metadata['model_params']
+            title += f"\n모델: n_est={mp.get('n_estimators')}, lr={mp.get('learning_rate')}, depth={mp.get('max_depth')}, reg_alpha={mp.get('reg_alpha')}"
+        
         ax.set_title(title)
         ax.set_xlabel('날짜')
         ax.set_ylabel('가격($)')
@@ -117,21 +128,46 @@ class ChartService:
         if metadata:
             model = metadata.get('model_name', 'Model')
             metrics = metadata.get('metrics', {})
-            mae = metrics.get('mae')
-            rmse = metrics.get('rmse')
-            diracc = metrics.get('direction_accuracy')
+            mae_1 = metrics.get('mae_1')
+            rmse_1 = metrics.get('rmse_1')
+            diracc_1 = metrics.get('direction_accuracy_1')
+            mae_ms = metrics.get('mae_ms')
+            rmse_ms = metrics.get('rmse_ms')
+            diracc_ms = metrics.get('direction_accuracy_ms')
+
             metric_parts = []
-            if mae is not None:
-                metric_parts.append(f"MAE{mae:.3f}")
-            if rmse is not None:
-                metric_parts.append(f"RMSE{rmse:.3f}")
-            if diracc is not None:
-                metric_parts.append(f"DIR{diracc:.2f}")
+            if mae_1 is not None:
+                metric_parts.append(f"MAE1_{mae_1:.3f}")
+            if mae_ms is not None:
+                metric_parts.append(f"({mae_ms:.3f})")
+            if rmse_1 is not None:
+                metric_parts.append(f"RMSE1_{rmse_1:.3f}")
+            if rmse_ms is not None:
+                metric_parts.append(f"({rmse_ms:.3f})")
+            if diracc_1 is not None:
+                metric_parts.append(f"DIR1_{diracc_1:.2f}")
+            if diracc_ms is not None:
+                metric_parts.append(f"({diracc_ms:.2f})")
             metric_str = '-'.join(metric_parts) if metric_parts else 'METRICS'
+            
+            # 파라미터 부분
+            params = metadata.get('params', {})
+            batch_size = params.get('batch_size', 'N/A')
+            step_size = params.get('step_size', 'N/A')
+            train_days = params.get('train_days', 'N/A')
+            param_str = f"B{batch_size}S{step_size}T{train_days}"
+            
+            # 모델 파라미터 부분
+            model_params = metadata.get('model_params', {})
+            n_est = model_params.get('n_estimators', 'N/A')
+            lr = model_params.get('learning_rate', 'N/A')
+            depth = model_params.get('max_depth', 'N/A')
+            model_str = f"M{n_est}L{lr}D{depth}"
+            
             dataset = metadata.get('dataset', ticker)
             created = dt.datetime.now().strftime('%Y%m%d-%H%M%S')
             safe_dataset = dataset.replace('/', '-').replace(' ', '')
-            filename = f"{model}_{metric_str}_{safe_dataset}_{created}.png"
+            filename = f"{model}_{metric_str}_{param_str}_{model_str}_{safe_dataset}_{created}.png"
 
         # 1. 파일로 저장
         plt.savefig(os.path.join('output', filename), dpi=100, bbox_inches='tight')
@@ -169,6 +205,12 @@ class ChartService:
         if metadata and 'params' in metadata:
             p = metadata['params']
             subtitle += f"\nbatch={p.get('batch_size')}, step={p.get('step_size')}, train_days={p.get('train_days')}, steps={p.get('predict_steps')}"
+            
+        # 모델 파라미터 정보 추가
+        if metadata and 'model_params' in metadata:
+            mp = metadata['model_params']
+            subtitle += f"\n모델: n_est={mp.get('n_estimators')}, lr={mp.get('learning_rate')}, depth={mp.get('max_depth')}, reg_alpha={mp.get('reg_alpha')}"
+            
         ax2.set_title(subtitle)
         ax2.set_xlabel('날짜')
         ax2.set_ylabel('가격($)')
