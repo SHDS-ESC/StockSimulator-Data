@@ -93,3 +93,6 @@ class StockPredictionRequest(BaseModel):
     save_image: bool = Field(True, description="차트 이미지 생성 여부")
     batch_size: Optional[int] = Field(None, description="배치 크기 (일, 기본값: train_days)")
     step_size: Optional[int] = Field(None, description="슬라이딩 윈도우 스텝 크기 (일, 기본값: train_days)")
+    
+    # 모델 파라미터 (선택적)
+    model_params: Optional[dict] = Field(None, description="LightGBM 모델 파라미터 (기본값 사용 시 생략)")
