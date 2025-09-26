@@ -4,6 +4,7 @@ import logging
 import traceback
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -30,6 +31,12 @@ async def log_requests(request: Request, call_next):
     return response
 
 # 전역 예외 핸들러
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    logger.error(f"Request validation error: {exc.errors()}")
+    logger.error(f"Body: {getattr(exc, 'body', None)}")
+    return JSONResponse(status_code=422, content={"detail": exc.errors()})
+
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     logger.error(f"Global exception handler caught: {exc}")

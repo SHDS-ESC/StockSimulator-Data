@@ -3,9 +3,24 @@
 from typing import Optional, List
 from datetime import date
 from pydantic import BaseModel, Field
+from pydantic import ConfigDict
 
 
-class InvestmentMetrics(BaseModel):
+def to_camel(s: str) -> str:
+    """snake_case를 camelCase로 변환"""
+    parts = s.split('_')
+    return parts[0] + ''.join(p.title() for p in parts[1:])
+
+
+class CamelModel(BaseModel):
+    """camelCase alias를 지원하는 베이스 모델"""
+    model_config = ConfigDict(
+        alias_generator=to_camel,
+        populate_by_name=True  # camel/snake 모두 입력 허용
+    )
+
+
+class InvestmentMetrics(CamelModel):
     current_price: float
     predicted_avg_price: float
     predicted_max_price: float
@@ -16,7 +31,7 @@ class InvestmentMetrics(BaseModel):
     upside_probability: float
 
 
-class RiskMetrics(BaseModel):
+class RiskMetrics(CamelModel):
     historical_volatility_annualized: float
     predicted_volatility: float
     var_95: float
@@ -25,7 +40,7 @@ class RiskMetrics(BaseModel):
     estimated_sharpe_ratio: float
 
 
-class InvestmentAnalysis(BaseModel):
+class InvestmentAnalysis(CamelModel):
     recommendation: str
     action: str  # BUY, SELL, HOLD
     confidence: str  # HIGH, MEDIUM, LOW
@@ -37,14 +52,14 @@ class InvestmentAnalysis(BaseModel):
     risk_metrics: RiskMetrics
 
 
-class FeatureImportance(BaseModel):
+class FeatureImportance(CamelModel):
     top_features: List[tuple[str, float]]
     total_features: int
     importance_sum: float
     max_importance: float
     min_importance: float
 
-class StockPredictionResponse(BaseModel):
+class StockPredictionResponse(CamelModel):
     ticker: str
     base_date: date
     last_price: float
@@ -59,33 +74,33 @@ class StockPredictionResponse(BaseModel):
     chart_brief: Optional[str] = Field(None, description="요약(최근 50일) 차트 (base64)")
 
 
-class HealthResponse(BaseModel):
+class HealthResponse(CamelModel):
     status: str
     database: str
     scheduler: str
     scheduled_jobs: int
 
 
-class TickersResponse(BaseModel):
+class TickersResponse(CamelModel):
     tickers: List[str]
     count: int
 
 
-class CacheInfoResponse(BaseModel):
+class CacheInfoResponse(CamelModel):
     cached_tickers: List[str]
     cache_count: int
 
 
-class MessageResponse(BaseModel):
+class MessageResponse(CamelModel):
     message: str
 
 
-class SchedulerStatusResponse(BaseModel):
+class SchedulerStatusResponse(CamelModel):
     running: bool
     jobs: List[dict]
 
 
-class StockPredictionRequest(BaseModel):
+class StockPredictionRequest(CamelModel):
     ticker: str = Field(..., description="주식 티커 심볼")
     train_days: int = Field(description="훈련 데이터 기간 (일)")
     predict_steps: int = Field(description="예측 기간 (일)")
@@ -99,29 +114,29 @@ class StockPredictionRequest(BaseModel):
 
 
 # ===== 포트폴리오 누적수익률 요청/응답 =====
-class TimeValue(BaseModel):
+class TimeValue(CamelModel):
     date: date
     value: float
 
 
-class PortfolioSpec(BaseModel):
+class PortfolioSpec(CamelModel):
     id: str
     tickers: List[str]
     weights: List[float]
 
 
-class PortfolioCumulativeReturnsRequest(BaseModel):
-    start_date: date
-    end_date: date
+class PortfolioCumulativeReturnsRequest(CamelModel):
+    start_date: date = Field(..., alias="startDate")
+    end_date: date = Field(..., alias="endDate")
     portfolios: List[PortfolioSpec]
-    base_value: float = Field(1.0, description="초기가치, 1.0=100과 같은 기준")
+    base_value: float = Field(1.0, alias="baseValue", description="초기가치, 1.0=100과 같은 기준")
     rebalance: Optional[str] = Field(None, description="none|daily|monthly 등 리밸런싱 정책")
 
 
-class PortfolioSeries(BaseModel):
+class PortfolioSeries(CamelModel):
     id: str
     series: List[TimeValue]
 
 
-class PortfolioCumulativeReturnsResponse(BaseModel):
+class PortfolioCumulativeReturnsResponse(CamelModel):
     series: List[PortfolioSeries]
