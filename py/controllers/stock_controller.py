@@ -5,7 +5,14 @@ import logging
 from typing import Optional
 import datetime as dt
 
-from ..models.dto import MessageResponse, StockPredictionResponse, TickersResponse, StockPredictionRequest
+from ..models.dto import (
+    MessageResponse,
+    StockPredictionResponse,
+    TickersResponse,
+    StockPredictionRequest,
+    PortfolioCumulativeReturnsRequest,
+    PortfolioCumulativeReturnsResponse,
+)
 from ..services.database_service import DatabaseService
 from ..services.stock_service import StockService
 
@@ -131,3 +138,20 @@ def get_stock_data(ticker: str, db_service: DatabaseService = Depends(get_db_ser
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"데이터 조회 실패: {str(e)}")
+
+
+@router.post("/portfolio/cumulative-returns", response_model=PortfolioCumulativeReturnsResponse)
+def compute_portfolios_cumulative_returns(
+    request: PortfolioCumulativeReturnsRequest,
+    stock_service: StockService = Depends(get_stock_service)
+):
+    """여러 포트폴리오의 일별 누적가치 시리즈 계산 (스켈레톤)"""
+    try:
+        result = stock_service.compute_portfolios_cumulative_returns(request)
+        return PortfolioCumulativeReturnsResponse(**result)
+    except ValueError as e:
+        logger.exception("Portfolio cumulative returns ValueError: %s", e)
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("Portfolio cumulative returns failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"누적 수익률 계산 실패: {str(e)}")

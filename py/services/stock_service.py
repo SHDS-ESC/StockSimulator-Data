@@ -658,3 +658,61 @@ class StockService:
             print(f"🔍 미래 예측 모드: 실제 {len(future_dates_in_data)}개 + 추정 {remaining_days}개")
         
         return pred_dates
+
+    # ===== 포트폴리오 누적수익률 =====
+    def compute_portfolios_cumulative_returns(self, request):
+        """여러 포트폴리오에 대한 일별 누적가치 계산
+
+        Args:
+            request (PortfolioCumulativeReturnsRequest): 기간과 포트폴리오 사양
+
+        Returns:
+            dict: { 'series': [ { 'id': str, 'series': [ { 'date': date, 'value': float } ] } ] }
+        """
+        # TODO: 실제 구현 - 데이터 로드, 수익률 계산, 가중합, 리밸런싱, 누적가치 변환
+        try:
+            if request.start_date > request.end_date:
+                raise ValueError("start_date는 end_date보다 이전이어야 합니다")
+            if not request.portfolios:
+                raise ValueError("포트폴리오 목록이 비어 있습니다")
+
+            series_list = []
+            for pf in request.portfolios:
+                if len(pf.tickers) != len(pf.weights):
+                    raise ValueError(f"포트폴리오 '{pf.id}'의 tickers와 weights 길이가 다릅니다")
+
+                portfolio_cum = self.make_portfolio_cumulative(pf.tickers, pf.weights, request.start_date, request.end_date)
+                portfolio_cum = portfolio_cum.sort_index()
+                items = []
+                for idx, val in portfolio_cum.items():
+                    # idx를 date로 변환 보장
+                    if hasattr(idx, 'date'):
+                        d = idx.date()
+                    else:
+                        try:
+                            d = pd.to_datetime(idx).date()
+                        except Exception:
+                            d = idx
+                    items.append({'date': d, 'value': float(val)})
+
+                series_list.append({
+                    'id': pf.id,
+                    'series': items
+                })
+
+            return { 'series': series_list }
+        except Exception:
+            # 상위에서 로깅/에러 변환
+            raise
+
+
+    def make_portfolio_cumulative(self, ticker_list, weight_list, start_date, end_date):
+        returns = (
+            self.db_service
+                .get_multi_stock_data(ticker_list, columns=['close'], wide=True)
+                .loc[start_date:end_date]
+                .pct_change()
+                .dropna()
+        )
+        portfolio_returns = pd.Series(np.dot(weight_list, returns.T), index=returns.index)
+        return (1+portfolio_returns).cumprod() - 1
