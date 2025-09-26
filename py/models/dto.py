@@ -37,6 +37,13 @@ class InvestmentAnalysis(BaseModel):
     risk_metrics: RiskMetrics
 
 
+class FeatureImportance(BaseModel):
+    top_features: List[tuple[str, float]]
+    total_features: int
+    importance_sum: float
+    max_importance: float
+    min_importance: float
+
 class StockPredictionResponse(BaseModel):
     ticker: str
     base_date: date
@@ -46,9 +53,10 @@ class StockPredictionResponse(BaseModel):
     prediction_dates: List[date]
     train_data_count: int
     feature_count: int
+    feature_importance: Optional[FeatureImportance] = Field(None, description="피처 중요도 정보")
     investment_analysis: InvestmentAnalysis
     chart_full: Optional[str] = Field(None, description="전체 데이터 차트 (base64)")
-    chart_30d: Optional[str] = Field(None, description="최근 30일 차트 (base64)")
+    chart_brief: Optional[str] = Field(None, description="요약(최근 50일) 차트 (base64)")
 
 
 class HealthResponse(BaseModel):
@@ -79,7 +87,41 @@ class SchedulerStatusResponse(BaseModel):
 
 class StockPredictionRequest(BaseModel):
     ticker: str = Field(..., description="주식 티커 심볼")
-    train_days: int = Field(500, description="훈련 데이터 기간 (일)")
-    predict_steps: int = Field(5, description="예측 기간 (일)")
+    train_days: int = Field(description="훈련 데이터 기간 (일)")
+    predict_steps: int = Field(description="예측 기간 (일)")
     today: Optional[date] = Field(None, description="기준일 (기본: 오늘)")
     save_image: bool = Field(True, description="차트 이미지 생성 여부")
+    batch_size: Optional[int] = Field(None, description="배치 크기 (일, 기본값: train_days)")
+    step_size: Optional[int] = Field(None, description="슬라이딩 윈도우 스텝 크기 (일, 기본값: train_days)")
+    
+    # 모델 파라미터 (선택적)
+    model_params: Optional[dict] = Field(None, description="LightGBM 모델 파라미터 (기본값 사용 시 생략)")
+
+
+# ===== 포트폴리오 누적수익률 요청/응답 =====
+class TimeValue(BaseModel):
+    date: date
+    value: float
+
+
+class PortfolioSpec(BaseModel):
+    id: str
+    tickers: List[str]
+    weights: List[float]
+
+
+class PortfolioCumulativeReturnsRequest(BaseModel):
+    start_date: date
+    end_date: date
+    portfolios: List[PortfolioSpec]
+    base_value: float = Field(1.0, description="초기가치, 1.0=100과 같은 기준")
+    rebalance: Optional[str] = Field(None, description="none|daily|monthly 등 리밸런싱 정책")
+
+
+class PortfolioSeries(BaseModel):
+    id: str
+    series: List[TimeValue]
+
+
+class PortfolioCumulativeReturnsResponse(BaseModel):
+    series: List[PortfolioSeries]

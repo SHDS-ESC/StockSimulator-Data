@@ -1,4 +1,5 @@
 """투자 분석 서비스"""
+import logging
 
 import numpy as np
 
@@ -46,7 +47,8 @@ class InvestmentAnalyzer:
             ret = (pred_price - current_price) / current_price
             pred_returns.append(ret)
             current_price = pred_price
-        
+
+        print('Sharpe Ratio : ', pred_returns, np.mean(pred_returns), np.std(pred_returns))
         sharpe_ratio = (np.mean(pred_returns) / np.std(pred_returns)) if np.std(pred_returns) > 0 else 0
         
         risk_metrics = {

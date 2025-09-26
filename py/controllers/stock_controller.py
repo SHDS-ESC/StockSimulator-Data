@@ -1,14 +1,23 @@
 """주식 예측 컨트롤러"""
 
 from fastapi import APIRouter, HTTPException, Depends, Query
+import logging
 from typing import Optional
 import datetime as dt
 
-from ..models.dto import MessageResponse, StockPredictionResponse, TickersResponse, StockPredictionRequest
+from ..models.dto import (
+    MessageResponse,
+    StockPredictionResponse,
+    TickersResponse,
+    StockPredictionRequest,
+    PortfolioCumulativeReturnsRequest,
+    PortfolioCumulativeReturnsResponse,
+)
 from ..services.database_service import DatabaseService
 from ..services.stock_service import StockService
 
 router = APIRouter(tags=["stock"])
+logger = logging.getLogger(__name__)
 
 
 def get_db_service():
@@ -34,20 +43,47 @@ def predict_stock(
 ):
     """주식 가격 예측"""
     try:
-        result = stock_service.predict_stock(
-            ticker=request.ticker,
-            train_days=request.train_days,
-            predict_steps=request.predict_steps,
-            today=request.today,
-            save_image=request.save_image
+        logger.info(
+            "Predict request: ticker=%s, train_days=%s, predict_steps=%s, today=%s, save_image=%s, batch_size=%s, step_size=%s",
+            request.ticker, request.train_days, request.predict_steps, request.today, request.save_image, request.batch_size, request.step_size
         )
+        result = stock_service.predict_stock(request)
         
         return StockPredictionResponse(**result)
         
     except ValueError as e:
+        logger.exception("Predict ValueError: %s", e)
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
+        logger.exception("Predict failed: %s", e)
         raise HTTPException(status_code=500, detail=f"예측 실패: {str(e)}")
+
+
+@router.post("/predict-test")#, response_model=StockPredictionResponse)
+def predict_stock_test(
+        request: StockPredictionRequest,
+        stock_service: StockService = Depends(get_stock_service)
+):
+    """주식 가격 예측"""
+    today = request.today
+    for offset in range(0, 30, 2):
+        request.today = today + dt.timedelta(days=offset)
+        try:
+            logger.info(
+                "Predict request: ticker=%s, train_days=%s, predict_steps=%s, today=%s, save_image=%s, batch_size=%s, step_size=%s",
+                request.ticker, request.train_days, request.predict_steps, request.today, request.save_image,
+                request.batch_size, request.step_size
+            )
+            result = stock_service.predict_stock(request)
+
+            # return StockPredictionResponse(**result)
+
+        except ValueError as e:
+            logger.exception("Predict ValueError: %s", e)
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            logger.exception("Predict failed: %s", e)
+            raise HTTPException(status_code=500, detail=f"예측 실패: {str(e)}")
 
 
 @router.get("/tickers", response_model=TickersResponse)
@@ -102,3 +138,20 @@ def get_stock_data(ticker: str, db_service: DatabaseService = Depends(get_db_ser
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"데이터 조회 실패: {str(e)}")
+
+
+@router.post("/portfolio/cumulative-returns", response_model=PortfolioCumulativeReturnsResponse)
+def compute_portfolios_cumulative_returns(
+    request: PortfolioCumulativeReturnsRequest,
+    stock_service: StockService = Depends(get_stock_service)
+):
+    """여러 포트폴리오의 일별 누적가치 시리즈 계산 (스켈레톤)"""
+    try:
+        result = stock_service.compute_portfolios_cumulative_returns(request)
+        return PortfolioCumulativeReturnsResponse(**result)
+    except ValueError as e:
+        logger.exception("Portfolio cumulative returns ValueError: %s", e)
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("Portfolio cumulative returns failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"누적 수익률 계산 실패: {str(e)}")

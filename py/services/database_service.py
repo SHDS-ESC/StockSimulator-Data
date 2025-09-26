@@ -84,10 +84,10 @@ class DatabaseService:
         
         data.volume = data.volume.values.astype(np.float64)
         
-        # report_date를 인덱스로 설정
+        # report_date를 인덱스로 설정 (날짜만, 시간 제외)
         if 'report_date' in data.columns:
             data.set_index('report_date', inplace=True)
-            data.index = pd.to_datetime(data.index)  # datetime으로 변환
+            data.index = pd.to_datetime(data.index).date  # yyyy-mm-dd 날짜만 변환
         
         # 캐시에 저장
         self._stock_data_cache[ticker] = data.copy()
@@ -111,3 +111,48 @@ class DatabaseService:
             "cached_tickers": list(self._stock_data_cache.keys()),
             "cache_count": len(self._stock_data_cache)
         }
+
+    # ===== 멀티 티커 데이터 로드 (하나의 DataFrame으로 반환) =====
+    def get_multi_stock_data(self, tickers, columns=None, wide=True, join='inner'):
+        """복수 티커의 report 데이터를 하나의 DataFrame으로 반환
+
+        Args:
+            tickers (list[str]): 티커 리스트
+            columns (list[str]|None): 선택 컬럼 (None이면 전체)
+            wide (bool): True면 넓은 형식(멀티컬럼), False면 긴 형식(티커 컬럼 추가 후 concat)
+            join (str): wide=True일 때 인덱스 병합 방식 ('inner'|'outer')
+
+        Returns:
+            pd.DataFrame: 요청한 형식의 병합 DataFrame
+        """
+        if not tickers:
+            return pd.DataFrame()
+
+        frames = []
+        for t in tickers:
+            df = self.get_stock_data(t)
+            if columns is not None:
+                use_cols = [c for c in columns if c in df.columns]
+                df = df[use_cols].copy()
+            else:
+                df = df.copy()
+
+            if wide:
+                # 이후 concat에서 컬럼 멀티인덱스(ticker, column)를 만들기 위해 컬럼 레벨 추가
+                df.columns = pd.MultiIndex.from_product([[t], df.columns])
+            else:
+                df['ticker'] = t
+            frames.append(df)
+
+        if wide:
+            # 인덱스 기준 병합
+            merged = pd.concat(frames, axis=1, join=join)
+            return merged.sort_index()
+        else:
+            merged = pd.concat(frames, axis=0)
+            # 인덱스와 티커로 정렬
+            try:
+                merged = merged.sort_values(by=['ticker'])
+            except Exception:
+                pass
+            return merged
