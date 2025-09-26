@@ -92,12 +92,12 @@ app.include_router(health_controller.router)
 app.include_router(scheduler_controller.router)
 app.include_router(stock_controller.router)
 
-# 등록된 라우트 로깅
-logger.info("📋 등록된 API 라우트:")
-for route in app.routes:
-    if hasattr(route, 'path') and hasattr(route, 'methods'):
-        methods = ', '.join(route.methods)
-        logger.info(f"  {methods} {route.path}")
+# # 등록된 라우트 로깅
+# logger.info("📋 등록된 API 라우트:")
+# for route in app.routes:
+#     if hasattr(route, 'path') and hasattr(route, 'methods'):
+#         methods = ', '.join(route.methods)
+#         logger.info(f"  {methods} {route.path}")
 
 
 # 앱 시작 이벤트
