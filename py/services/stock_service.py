@@ -2,16 +2,24 @@
 
 import datetime as dt
 from datetime import timedelta
+import warnings
+import logging
 
 import lightgbm
 import pandas as pd
 import numpy as np
 from websockets.legacy.framing import prepare_data
 
+# LightGBM 경고 억제
+warnings.filterwarnings('ignore', category=UserWarning)
+logging.getLogger('lightgbm').setLevel(logging.ERROR)
+
 from .database_service import DatabaseService
 from .prediction_service import StockPredictor
 from .analysis_service import InvestmentAnalyzer
 from .chart_service import ChartService
+
+logger = logging.getLogger(__name__)
 
 
 class StockService:
@@ -46,6 +54,7 @@ class StockService:
         save_image = request.save_image
         batch_size = request.batch_size
         step_size = request.step_size
+        model_params_request = request.model_params
         
         # 기본값 설정: batch_size, step_size가 설정되지 않은 경우 train_days와 같은 값으로 설정
         if batch_size is None:
@@ -59,21 +68,44 @@ class StockService:
         training_count = (train_days - batch_size) // step_size + 1
         print(f"슬라이딩 윈도우 설정: batch_size={batch_size}, step_size={step_size}, train_days={train_days}")
         print(f"예상 학습 횟수: {training_count}")
+        
+        # 파라미터 로깅 (차트 생성 시 참조용)
+        logger.info(f"예측 파라미터: ticker={ticker}, train_days={train_days}, predict_steps={predict_steps}, batch_size={batch_size}, step_size={step_size}, today={today}")
+        if model_params_request:
+            logger.info(f"요청된 모델 파라미터: {model_params_request}")
 
-        # 2. 모델 초기화
-        # warm_start를 사용하는 경우 : 윈도우마다 트리를 추가 학습할 수 있도록 n_estimators=0에서 시작 & warm_start=True
-        # 사용하지 않는 경우 : n_estimators 200~1000 지정
-        lgbm = lightgbm.LGBMRegressor(n_estimators=200,
-                                      max_depth=-1,
-                                      learning_rate=0.01,
-                                      n_jobs=-1,
-                                      verbose=-1,
-                                      # warm_start=True,
-                                      # num_leaves=63,
-                                      # min_child_samples=10,
-                                      # min_split_gain=0.0,
-                                      # reg_lambda=0.1,
-                                      random_state=42)
+        # 2. 모델 초기화 - 파라미터 변수화
+        # 모델 파라미터 설정 (변수화) - 요청 파라미터와 기본값 병합
+        default_model_params = {
+            'n_estimators': 500,
+            'learning_rate': 0.05,
+            'max_depth': 6,
+            'min_child_samples': 20,
+            'reg_alpha': 0.1,
+            'reg_lambda': 0.1,
+            'random_state': 42
+        }
+        
+        # 요청된 모델 파라미터가 있으면 기본값과 병합
+        model_params = default_model_params.copy()
+        if model_params_request:
+            model_params.update(model_params_request)
+        
+        lgbm = lightgbm.LGBMRegressor(
+            n_estimators=model_params['n_estimators'],
+            learning_rate=model_params['learning_rate'],
+            max_depth=model_params['max_depth'],
+            n_jobs=-1,
+            verbose=-1,
+            # warm_start=True,
+            # num_leaves=63,
+            min_child_samples=model_params['min_child_samples'],
+            # min_split_gain=0.0,
+            reg_alpha=model_params['reg_alpha'],
+            reg_lambda=model_params['reg_lambda'],
+            random_state=model_params['random_state']
+        )
+        logger.info(f"모델 파라미터: {model_params}")
 
         predictor = StockPredictor(model=lgbm)
 
@@ -164,7 +196,8 @@ class StockService:
                     'train_days': train_days,
                     'predict_steps': predict_steps,
                     'feature_count': len(predictor.get_feature_columns(train_data))
-                }
+                },
+                'model_params': model_params
             }
             chart_data = self.chart_service.create_prediction_charts(
                 ticker, today, price_predictions, stock_data.loc[start_str:end_str]['close'], pred_dates,
@@ -250,9 +283,13 @@ class StockService:
             if len(window_data) < batch_size:
                 break
 
-            # 학습/검증 분할
-            train_df = window_data.iloc[:-20]
-            val_df = window_data.iloc[-20:]
+            # 학습/검증 분할: 예측 기간에 비례한 검증 데이터 크기
+            val_ratio = predict_steps / batch_size
+            val_size = max(1, int(len(window_data) * val_ratio))
+            val_size = min(val_size, len(window_data) - 1)  # 최소 1일은 학습용으로 남김
+            
+            train_df = window_data.iloc[:-val_size]
+            val_df = window_data.iloc[-val_size:]
 
             print(f"train_df range: {train_df.index[0]} ~ {train_df.index[-1]}, val_df range: {val_df.index[0]} ~ {val_df.index[-1]}")
 
@@ -261,6 +298,9 @@ class StockService:
             pred_col = predictor.get_predict_column()
 
             print(f"feature_cols: {feature_cols}, pred_col: {pred_col}")
+
+            # Target 변수와 Feature-Target 상관관계 분석
+            self._analyze_target_features(train_df, feature_cols, pred_col)
 
             X_train = train_df[feature_cols].copy()
             # y는 1D Series로 사용 (스칼라 메트릭 비교 용이)
@@ -311,15 +351,31 @@ class StockService:
             pred1_scalar = float(np.asarray(return_predictions[0]).ravel()[0])
             y_val_scalar = float(np.asarray(y_val).ravel()[0])
 
-            mae_score = self._calculate_mae(np.array([y_val_scalar]), np.array([pred1_scalar]))
-            rmse_score = self._calculate_rmse(np.array([y_val_scalar]), np.array([pred1_scalar]))
-            direction_acc = 1.0 if np.sign(pred1_scalar) == np.sign(y_val_scalar) else 0.0
+            mae_score_1 = self._calculate_mae(np.array([y_val_scalar]), np.array([pred1_scalar]))
+            rmse_score_1 = self._calculate_rmse(np.array([y_val_scalar]), np.array([pred1_scalar]))
+            direction_acc_1 = 1.0 if np.sign(pred1_scalar) == np.sign(y_val_scalar) else 0.0
 
-            validation_scores.append(mae_score)
+            # 멀티스텝 검증: 예측한 스텝 수 만큼 실제 값과 비교
+            k_steps = min(predict_steps, len(val_df))
+            if k_steps > 0:
+                y_true_seq = val_df[pred_col].iloc[:k_steps].values.astype(float)
+                y_pred_seq = np.asarray(return_predictions[:k_steps], dtype=float)
+                mae_score_ms = self._calculate_mae(y_true_seq, y_pred_seq)
+                rmse_score_ms = self._calculate_rmse(y_true_seq, y_pred_seq)
+                direction_acc_ms = float(np.mean(np.sign(y_pred_seq) == np.sign(y_true_seq)))
+            else:
+                mae_score_ms = np.nan
+                rmse_score_ms = np.nan
+                direction_acc_ms = np.nan
+
+            validation_scores.append(mae_score_1)
             performance_metrics.append({
-                'mae': mae_score,
-                'rmse': rmse_score,
-                'direction_accuracy': direction_acc
+                'mae_1': mae_score_1,
+                'rmse_1': rmse_score_1,
+                'direction_accuracy_1': direction_acc_1,
+                'mae_ms': mae_score_ms,
+                'rmse_ms': rmse_score_ms,
+                'direction_accuracy_ms': direction_acc_ms
             })
 
             # 수익률을 가격으로 변환
@@ -332,13 +388,21 @@ class StockService:
             start_dt, end_dt = train_df.index[0], train_df.index[-1]
             # 1-step 결과 요약 (recursive 첫 스텝 기반)
             print(f"[Window {window_no}] {start_dt} ~ {end_dt}")
-            print(f"  1-step: pred={pred1_scalar:.6f}, true={y_val_scalar:.6f}, MAE={mae_score:.6f}, RMSE={rmse_score:.6f}, DirAcc={direction_acc:.3f}")
+            print(f"  1-step: pred={pred1_scalar:.6f}, true={y_val_scalar:.6f}, MAE={mae_score_1:.6f}, RMSE={rmse_score_1:.6f}, DirAcc={direction_acc_1:.3f}")
 
             # 멀티스텝 결과 요약
             steps_len = len(return_predictions) if hasattr(return_predictions, '__len__') else predict_steps
             ret_first = return_predictions[0] if steps_len > 0 else None
             ret_last = return_predictions[-1] if steps_len > 0 else None
-            print(f"  multi-step: steps={steps_len}, rtn_first={ret_first:.6f} rtn_last={ret_last:.6f}")
+            # 가격 기준 RMSE(멀티스텝) 계산 및 로그
+            if k_steps > 0:
+                actual_prices_seq = val_df['close'].iloc[:k_steps].values.astype(float)
+                pred_prices_seq = np.asarray(price_predictions[:k_steps], dtype=float)
+                price_rmse_ms = self._calculate_rmse(actual_prices_seq, pred_prices_seq)
+                performance_metrics[-1]['price_rmse_ms'] = price_rmse_ms
+                print(f"  multi-step: steps={steps_len}, rtn_first={ret_first:.6f} rtn_last={ret_last:.6f}, price_RMSE={price_rmse_ms:.6f}")
+            else:
+                print(f"  multi-step: steps={steps_len}, rtn_first={ret_first:.6f} rtn_last={ret_last:.6f}")
             print(f"  base_price={last_price:.4f}, history=on")
         
         # 예측 결과 검증
@@ -351,18 +415,34 @@ class StockService:
         # - 윈도우별 성능(MAE 등)은 리포팅/모니터링/가중치 산정용 참고 값으로만 사용.
         final_predictions = all_predictions[-1]
 
-        # 성능 요약 출력
-        avg_mae = np.mean([m['mae'] for m in performance_metrics])
-        avg_rmse = np.mean([m['rmse'] for m in performance_metrics])
-        avg_direction_acc = np.mean([m['direction_accuracy'] for m in performance_metrics])
-        
+        # 성능 요약 출력 (1-step 및 멀티스텝 각각)
+        def _safe_mean(values):
+            arr = np.asarray(values, dtype=float)
+            if arr.size == 0:
+                return np.nan
+            return float(np.nanmean(arr))
+
+        avg_mae_1 = _safe_mean([m.get('mae_1') for m in performance_metrics])
+        avg_rmse_1 = _safe_mean([m.get('rmse_1') for m in performance_metrics])
+        avg_direction_acc_1 = _safe_mean([m.get('direction_accuracy_1') for m in performance_metrics])
+
+        avg_mae_ms = _safe_mean([m.get('mae_ms') for m in performance_metrics])
+        avg_rmse_ms = _safe_mean([m.get('rmse_ms') for m in performance_metrics])
+        avg_direction_acc_ms = _safe_mean([m.get('direction_accuracy_ms') for m in performance_metrics])
+        avg_price_rmse_ms = _safe_mean([m.get('price_rmse_ms') for m in performance_metrics])
+
         print(f"총 {len(all_predictions)}개 윈도우로 예측 완료")
-        print(f"평균 성능: MAE={avg_mae:.4f}, RMSE={avg_rmse:.4f}, 방향정확도={avg_direction_acc:.3f}")
+        print(f"평균 성능(1-step): MAE={avg_mae_1:.4f}, RMSE={avg_rmse_1:.4f}, 방향정확도={avg_direction_acc_1:.3f}")
+        print(f"평균 성능(multi-step): MAE={avg_mae_ms:.4f}, RMSE={avg_rmse_ms:.4f}, 방향정확도={avg_direction_acc_ms:.3f}, 가격RMSE={avg_price_rmse_ms:.4f}")
 
         metrics_summary = {
-            'mae': float(avg_mae) if not np.isnan(avg_mae) else None,
-            'rmse': float(avg_rmse) if not np.isnan(avg_rmse) else None,
-            'direction_accuracy': float(avg_direction_acc) if not np.isnan(avg_direction_acc) else None,
+            'mae_1': avg_mae_1 if not np.isnan(avg_mae_1) else None,
+            'rmse_1': avg_rmse_1 if not np.isnan(avg_rmse_1) else None,
+            'direction_accuracy_1': avg_direction_acc_1 if not np.isnan(avg_direction_acc_1) else None,
+            'mae_ms': avg_mae_ms if not np.isnan(avg_mae_ms) else None,
+            'rmse_ms': avg_rmse_ms if not np.isnan(avg_rmse_ms) else None,
+            'direction_accuracy_ms': avg_direction_acc_ms if not np.isnan(avg_direction_acc_ms) else None,
+            'price_rmse_ms': avg_price_rmse_ms if not np.isnan(avg_price_rmse_ms) else None,
             'num_windows': len(performance_metrics)
         }
         
@@ -399,6 +479,132 @@ class StockService:
             weights = [w / total_weight for w in weights]
         
         return weights
+    
+    def _analyze_target_features(self, train_df, feature_cols, pred_col):
+        """Target 변수와 Feature-Target 상관관계 분석"""
+        try:
+            print(f"\n🔍 Target 변수 분석: {pred_col}")
+            print("=" * 50)
+            
+            # Target 변수 통계
+            target_stats = train_df[pred_col].describe()
+            print(f"Target 변수 통계:")
+            print(f"  개수: {target_stats['count']:.0f}")
+            print(f"  평균: {target_stats['mean']:.6f}")
+            print(f"  표준편차: {target_stats['std']:.6f}")
+            print(f"  최솟값: {target_stats['min']:.6f}")
+            print(f"  최댓값: {target_stats['max']:.6f}")
+            print(f"  25%: {target_stats['25%']:.6f}")
+            print(f"  50%: {target_stats['50%']:.6f}")
+            print(f"  75%: {target_stats['75%']:.6f}")
+            
+            # Target 변수 샘플
+            print(f"\nTarget 변수 샘플 (처음 10개):")
+            sample_values = train_df[pred_col].head(10).values
+            for i, val in enumerate(sample_values):
+                print(f"  [{i}] {val:.6f}")
+            
+            # Target 변수 분포
+            positive_count = (train_df[pred_col] > 0).sum()
+            negative_count = (train_df[pred_col] < 0).sum()
+            zero_count = (train_df[pred_col] == 0).sum()
+            total_count = len(train_df[pred_col])
+            
+            print(f"\nTarget 변수 분포:")
+            print(f"  양수: {positive_count}개 ({positive_count/total_count*100:.1f}%)")
+            print(f"  음수: {negative_count}개 ({negative_count/total_count*100:.1f}%)")
+            print(f"  영: {zero_count}개 ({zero_count/total_count*100:.1f}%)")
+            
+            # Feature-Target 상관관계
+            print(f"\nFeature-Target 상관관계 (상위 10개):")
+            correlations = []
+            for col in feature_cols:
+                try:
+                    corr = train_df[col].corr(train_df[pred_col])
+                    if not np.isnan(corr):
+                        correlations.append((col, corr))
+                except:
+                    continue
+            
+            # 상관관계 절댓값 기준으로 정렬
+            correlations.sort(key=lambda x: abs(x[1]), reverse=True)
+            
+            for i, (col, corr) in enumerate(correlations[:10]):
+                direction = "📈" if corr > 0 else "📉"
+                print(f"  {i+1:2d}. {col:20s}: {corr:8.4f} {direction}")
+            
+            # 가장 높은 상관관계 피처들의 실제 값 확인
+            if correlations:
+                top_feature = correlations[0][0]
+                print(f"\n최고 상관관계 피처 '{top_feature}' 샘플:")
+                sample_data = train_df[[top_feature, pred_col]].head(5)
+                for idx, row in sample_data.iterrows():
+                    print(f"  {idx}: {top_feature}={row[top_feature]:.6f}, {pred_col}={row[pred_col]:.6f}")
+            
+            # 피처들의 변화량과 Target 상관관계 분석
+            print(f"\n피처 변화량 vs Target 상관관계 분석:")
+            print("-" * 50)
+            
+            # 주요 피처들의 변화량 계산
+            change_features = {}
+            for col in ['rsi', 'macd', 'close', 'volume']:
+                if col in train_df.columns:
+                    change_col = f"{col}_change"
+                    train_df[change_col] = train_df[col] - train_df[col].shift(1)
+                    change_features[change_col] = train_df[change_col]
+            
+            # 가격 변화량 (수익률)
+            if 'close' in train_df.columns:
+                train_df['price_change'] = train_df['close'] / train_df['close'].shift(1) - 1
+                change_features['price_change'] = train_df['price_change']
+            
+            # 변화량 피처들과 Target의 상관관계
+            change_correlations = []
+            for col, values in change_features.items():
+                try:
+                    corr = values.corr(train_df[pred_col])
+                    if not np.isnan(corr):
+                        change_correlations.append((col, corr))
+                except:
+                    continue
+            
+            change_correlations.sort(key=lambda x: abs(x[1]), reverse=True)
+            
+            print("변화량 피처 상관관계 (상위 5개):")
+            for i, (col, corr) in enumerate(change_correlations[:5]):
+                direction = "📈" if corr > 0 else "📉"
+                print(f"  {i+1}. {col:20s}: {corr:8.4f} {direction}")
+            
+            # 피처들의 실제 값과 Target의 관계 패턴 분석
+            print(f"\n피처-타겟 관계 패턴 분석:")
+            print("-" * 50)
+            
+            # RSI와 Target의 관계
+            if 'rsi' in train_df.columns:
+                print("RSI vs Target 관계:")
+                rsi_ranges = [(0, 30), (30, 50), (50, 70), (70, 100)]
+                for low, high in rsi_ranges:
+                    mask = (train_df['rsi'] >= low) & (train_df['rsi'] < high)
+                    if mask.sum() > 0:
+                        avg_target = train_df[mask][pred_col].mean()
+                        count = mask.sum()
+                        print(f"  RSI {low}-{high}: 평균 Target={avg_target:.4f} (n={count})")
+            
+            # 가격 변화량과 Target의 관계
+            if 'price_change' in train_df.columns:
+                print("\n가격 변화량 vs Target 관계:")
+                price_ranges = [(-0.1, -0.05), (-0.05, 0), (0, 0.05), (0.05, 0.1)]
+                for low, high in price_ranges:
+                    mask = (train_df['price_change'] >= low) & (train_df['price_change'] < high)
+                    if mask.sum() > 0:
+                        avg_target = train_df[mask][pred_col].mean()
+                        count = mask.sum()
+                        print(f"  가격변화 {low:.2f}-{high:.2f}: 평균 Target={avg_target:.4f} (n={count})")
+            
+            print("=" * 50)
+            
+        except Exception as e:
+            print(f"❌ Target-Feature 분석 중 오류: {e}")
     
     def _weighted_ensemble(self, predictions, weights):
         """가중 앙상블로 최종 예측 계산"""
