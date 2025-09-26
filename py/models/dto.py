@@ -96,3 +96,32 @@ class StockPredictionRequest(BaseModel):
     
     # 모델 파라미터 (선택적)
     model_params: Optional[dict] = Field(None, description="LightGBM 모델 파라미터 (기본값 사용 시 생략)")
+
+
+# ===== 포트폴리오 누적수익률 요청/응답 =====
+class TimeValue(BaseModel):
+    date: date
+    value: float
+
+
+class PortfolioSpec(BaseModel):
+    id: str
+    tickers: List[str]
+    weights: List[float]
+
+
+class PortfolioCumulativeReturnsRequest(BaseModel):
+    start_date: date
+    end_date: date
+    portfolios: List[PortfolioSpec]
+    base_value: float = Field(1.0, description="초기가치, 1.0=100과 같은 기준")
+    rebalance: Optional[str] = Field(None, description="none|daily|monthly 등 리밸런싱 정책")
+
+
+class PortfolioSeries(BaseModel):
+    id: str
+    series: List[TimeValue]
+
+
+class PortfolioCumulativeReturnsResponse(BaseModel):
+    series: List[PortfolioSeries]
