@@ -23,7 +23,6 @@ app = FastAPI(title="StockSimulator API", version="0.1.0")
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
     logger.info(f"📥 요청: {request.method} {request.url}")
-    logger.info(f"📥 헤더: {dict(request.headers)}")
     
     response = await call_next(request)
     
@@ -34,8 +33,32 @@ async def log_requests(request: Request, call_next):
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     logger.error(f"Request validation error: {exc.errors()}")
-    logger.error(f"Body: {getattr(exc, 'body', None)}")
-    return JSONResponse(status_code=422, content={"detail": exc.errors()})
+    logger.error(f"Request URL: {request.url}")
+    logger.error(f"Request method: {request.method}")
+    
+    # 요청 바디 로깅
+    try:
+        body = await request.body()
+        if body:
+            import json
+            try:
+                body_json = json.loads(body.decode('utf-8'))
+                logger.error(f"📥 실패한 요청 바디: {body_json}")
+            except json.JSONDecodeError:
+                logger.error(f"📥 실패한 요청 바디 (텍스트): {body.decode('utf-8')[:500]}...")
+        else:
+            logger.error("📥 실패한 요청 바디: (비어있음)")
+    except Exception as e:
+        logger.error(f"📥 요청 바디 읽기 실패: {e}")
+    
+    return JSONResponse(
+        status_code=422,
+        content={
+            "detail": "요청 데이터 검증 실패",
+            "errors": exc.errors(),
+            "request_url": str(request.url)
+        }
+    )
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
