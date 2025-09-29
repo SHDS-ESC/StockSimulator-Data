@@ -125,7 +125,7 @@ class PortfolioSpec(CamelModel):
     weights: List[float]
 
 
-class PortfolioCumulativeReturnsRequest(CamelModel):
+class PortfolioAnalysisReturnsRequest(CamelModel):
     start_date: date = Field(..., alias="startDate")
     end_date: date = Field(..., alias="endDate")
     portfolios: List[PortfolioSpec]
@@ -138,5 +138,50 @@ class PortfolioSeries(CamelModel):
     series: List[TimeValue]
 
 
-class PortfolioCumulativeReturnsResponse(CamelModel):
+class QuantstatsMetrics(CamelModel):
+    start_period: Optional[date] = None
+    end_period: Optional[date] = None
+    time_in_market: Optional[float] = None
+    cumulative_return: Optional[float] = None
+    cagr: Optional[float] = None
+    sharpe: Optional[float] = None
+    prob_sharpe_ratio: Optional[float] = None
+    sortino: Optional[float] = None
+    omega: Optional[float] = None
+    max_drawdown: Optional[float] = None
+    max_dd_date: Optional[date] = None
+    max_dd_period_start: Optional[date] = None
+    max_dd_period_end: Optional[date] = None
+    longest_dd_days: Optional[int] = None
+    gain_pain_ratio: Optional[float] = None
+    payoff_ratio: Optional[float] = None
+    profit_factor: Optional[float] = None
+    cpc_index: Optional[float] = None
+    tail_ratio: Optional[float] = None
+    outlier_win_ratio: Optional[float] = None
+    outlier_loss_ratio: Optional[float] = None
+    mtd: Optional[float] = None
+    three_m: Optional[float] = None
+    six_m: Optional[float] = None
+    ytd: Optional[float] = None
+    one_y: Optional[float] = None
+    three_y_ann: Optional[float] = None
+    five_y_ann: Optional[float] = None
+    ten_y_ann: Optional[float] = None
+    all_time_ann: Optional[float] = None
+    avg_drawdown: Optional[float] = None
+    avg_drawdown_days: Optional[int] = None
+    recovery_factor: Optional[float] = None
+    ulcer_index: Optional[float] = None
+    serenity_index: Optional[float] = None
+    volatility_annualized: Optional[float] = None
+
+
+class PortfolioMetric(CamelModel):
+    id: str
+    metrics: QuantstatsMetrics
+
+
+class PortfolioAnalysisReturnsResponse(CamelModel):
     series: List[PortfolioSeries]
+    metrics: List[PortfolioMetric]

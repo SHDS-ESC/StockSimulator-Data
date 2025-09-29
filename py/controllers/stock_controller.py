@@ -10,8 +10,8 @@ from ..models.dto import (
     StockPredictionResponse,
     TickersResponse,
     StockPredictionRequest,
-    PortfolioCumulativeReturnsRequest,
-    PortfolioCumulativeReturnsResponse,
+    PortfolioAnalysisReturnsRequest,
+    PortfolioAnalysisReturnsResponse,
 )
 from ..services.database_service import DatabaseService
 from ..services.stock_service import StockService
@@ -140,18 +140,17 @@ def get_stock_data(ticker: str, db_service: DatabaseService = Depends(get_db_ser
         raise HTTPException(status_code=500, detail=f"데이터 조회 실패: {str(e)}")
 
 
-@router.post("/portfolio/cumulative-returns", response_model=PortfolioCumulativeReturnsResponse)
-def compute_portfolios_cumulative_returns(
-    request: PortfolioCumulativeReturnsRequest,
+@router.post("/portfolio/analysis", response_model=PortfolioAnalysisReturnsResponse)
+def portfolio_analysis(
+    request: PortfolioAnalysisReturnsRequest,
     stock_service: StockService = Depends(get_stock_service)
 ):
-    """여러 포트폴리오의 일별 누적가치 시리즈 계산 (스켈레톤)"""
     try:
-        result = stock_service.compute_portfolios_cumulative_returns(request)
-        return PortfolioCumulativeReturnsResponse(**result)
+        result = stock_service.portfolio_analysis(request)
+        return PortfolioAnalysisReturnsResponse(**result)
     except ValueError as e:
-        logger.exception("Portfolio cumulative returns ValueError: %s", e)
+        logger.exception("Portfolio analysis returns ValueError: %s", e)
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        logger.exception("Portfolio cumulative returns failed: %s", e)
-        raise HTTPException(status_code=500, detail=f"누적 수익률 계산 실패: {str(e)}")
+        logger.exception("Portfolio analysis returns failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"포트폴리오 분석 실패: {str(e)}")

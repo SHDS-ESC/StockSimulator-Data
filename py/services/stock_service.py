@@ -660,14 +660,14 @@ class StockService:
         return pred_dates
 
     # ===== 포트폴리오 누적수익률 =====
-    def compute_portfolios_cumulative_returns(self, request):
+    def portfolio_analysis(self, request):
         """여러 포트폴리오에 대한 일별 누적가치 계산
 
         Args:
             request (PortfolioCumulativeReturnsRequest): 기간과 포트폴리오 사양
 
         Returns:
-            dict: { 'series': [ { 'id': str, 'series': [ { 'date': date, 'value': float } ] } ] }
+            dict: { 'series': [ { 'id': str, 'series': [ { 'date': date, 'value': float } ] } ], 'metrics': dict }
         """
         # TODO: 실제 구현 - 데이터 로드, 수익률 계산, 가중합, 리밸런싱, 누적가치 변환
         try:
@@ -677,11 +677,29 @@ class StockService:
                 raise ValueError("포트폴리오 목록이 비어 있습니다")
 
             series_list = []
+            metrics_list = []
             for pf in request.portfolios:
                 if len(pf.tickers) != len(pf.weights):
                     raise ValueError(f"포트폴리오 '{pf.id}'의 tickers와 weights 길이가 다릅니다")
 
-                portfolio_cum = self.make_portfolio_cumulative(pf.tickers, pf.weights, request.start_date, request.end_date)
+                # 일별 수익률 Series
+                portfolio_daily_returns = self.make_portfolio_cumulative(pf.tickers, pf.weights, request.start_date, request.end_date)
+                
+                # quantstats 지표 계산
+                qs_metrics = self.portfolio_reports_metrics(portfolio_daily_returns)
+                metrics_payload = self._convert_quantstats_to_dto(qs_metrics)
+                # 변동성 폴백: 1년 미만 등으로 비어 있으면 일변동성의 연율화로 보충
+                try:
+                    if metrics_payload.get('volatility_annualized') is None:
+                        if len(portfolio_daily_returns) >= 2:
+                            daily_vol = float(pd.Series(portfolio_daily_returns).std(ddof=1))
+                            ann_vol = float(daily_vol * np.sqrt(252))
+                            metrics_payload['volatility_annualized'] = ann_vol
+                except Exception:
+                    pass
+                
+                # 누적수익률 Series
+                portfolio_cum = (1 + portfolio_daily_returns).cumprod() - 1
                 portfolio_cum = portfolio_cum.sort_index()
                 items = []
                 for idx, val in portfolio_cum.items():
@@ -699,8 +717,12 @@ class StockService:
                     'id': pf.id,
                     'series': items
                 })
+                metrics_list.append({
+                    'id': pf.id,
+                    'metrics': metrics_payload
+                })
 
-            return { 'series': series_list }
+            return { 'series': series_list, 'metrics': metrics_list }
         except Exception:
             # 상위에서 로깅/에러 변환
             raise
@@ -715,4 +737,126 @@ class StockService:
                 .dropna()
         )
         portfolio_returns = pd.Series(np.dot(weight_list, returns.T), index=returns.index)
-        return (1+portfolio_returns).cumprod() - 1
+        return portfolio_returns
+
+    def portfolio_reports_metrics(self, portfolio_returns):
+        import quantstats as qs
+        # metrics 함수를 사용하여 주요 지표 값을 한 번에 얻기
+        portfolio_returns.index = pd.to_datetime(portfolio_returns.index)
+        metrics_series = qs.reports.metrics(
+            portfolio_returns,
+            mode='full',
+            display=False,
+            annualize=True  # 연율화된 지표 포함
+        )
+        print(f'metrics_series: {metrics_series}')
+        # basic 모드에 변동성이 포함되지 않을 수 있어, 직접 계산하여 테이블에 추가
+        try:
+            vol_ann = float(pd.Series(portfolio_returns).std(ddof=1) * np.sqrt(252))
+            if isinstance(metrics_series, pd.Series):
+                if 'Volatility (ann.)' not in metrics_series.index and 'Volatility' not in metrics_series.index:
+                    metrics_series['Volatility (ann.)'] = vol_ann
+            else:
+                col = metrics_series.columns[0] if len(metrics_series.columns) > 0 else None
+                if col is not None and 'Volatility (ann.)' not in metrics_series.index and 'Volatility' not in metrics_series.index:
+                    metrics_series.loc['Volatility (ann.)', col] = vol_ann
+        except Exception:
+            pass
+        
+        return metrics_series
+
+    def _convert_quantstats_to_dto(self, metrics_obj):
+        """QuantStats metrics(DataFrame/Series)을 API DTO(dict)로 변환"""
+        def _get_val(name):
+            try:
+                if isinstance(metrics_obj, pd.Series):
+                    return metrics_obj.get(name)
+                # DataFrame: 첫 컬럼 기준 값 추출
+                col = metrics_obj.columns[0] if len(metrics_obj.columns) > 0 else None
+                if col is None:
+                    return None
+                if name in metrics_obj.index:
+                    return metrics_obj.loc[name, col]
+                return None
+            except Exception:
+                return None
+
+        def _to_float(v):
+            try:
+                if v is None:
+                    return None
+                s = str(v).strip()
+                if s == '' or s.lower() in ('nan', 'none'):
+                    return None
+                is_percent = s.endswith('%')
+                if is_percent:
+                    s = s[:-1]
+                s = s.replace(',', '')
+                num = float(s)
+                return num / 100.0 if is_percent else num
+            except Exception:
+                try:
+                    return float(v)
+                except Exception:
+                    return None
+
+        def _to_int(v):
+            try:
+                if v is None:
+                    return None
+                return int(float(v))
+            except Exception:
+                return None
+
+        def _to_date(v):
+            try:
+                if v is None:
+                    return None
+                dtv = pd.to_datetime(v, errors='coerce')
+                if pd.isna(dtv):
+                    return None
+                return dtv.date()
+            except Exception:
+                return None
+
+        # 키 매핑 및 변환
+        payload = {
+            'start_period': _to_date(_get_val('Start Period')),
+            'end_period': _to_date(_get_val('End Period')),
+            'time_in_market': _to_float(_get_val('Time in Market')),
+            'cumulative_return': _to_float(_get_val('Cumulative Return')),
+            'cagr': _to_float(_get_val('CAGR﹪') or _get_val('CAGR%') or _get_val('CAGR')),
+            'sharpe': _to_float(_get_val('Sharpe')),
+            'prob_sharpe_ratio': _to_float(_get_val('Prob. Sharpe Ratio')),
+            'sortino': _to_float(_get_val('Sortino')),
+            'omega': _to_float(_get_val('Omega')),
+            'max_drawdown': _to_float(_get_val('Max Drawdown')),
+            'max_dd_date': _to_date(_get_val('Max DD Date')),
+            'max_dd_period_start': _to_date(_get_val('Max DD Period Start')),
+            'max_dd_period_end': _to_date(_get_val('Max DD Period End')),
+            'longest_dd_days': _to_int(_get_val('Longest DD Days')),
+            'gain_pain_ratio': _to_float(_get_val('Gain/Pain Ratio')),
+            'payoff_ratio': _to_float(_get_val('Payoff Ratio')),
+            'profit_factor': _to_float(_get_val('Profit Factor')),
+            'cpc_index': _to_float(_get_val('CPC Index')),
+            'tail_ratio': _to_float(_get_val('Tail Ratio')),
+            'outlier_win_ratio': _to_float(_get_val('Outlier Win Ratio')),
+            'outlier_loss_ratio': _to_float(_get_val('Outlier Loss Ratio')),
+            'mtd': _to_float(_get_val('MTD')),
+            'three_m': _to_float(_get_val('3M')),
+            'six_m': _to_float(_get_val('6M')),
+            'ytd': _to_float(_get_val('YTD')),
+            'one_y': _to_float(_get_val('1Y')),
+            'three_y_ann': _to_float(_get_val('3Y (ann.)')),
+            'five_y_ann': _to_float(_get_val('5Y (ann.)')),
+            'ten_y_ann': _to_float(_get_val('10Y (ann.)')),
+            'all_time_ann': _to_float(_get_val('All-time (ann.)') or _get_val('All-Time (ann.)')),
+            'avg_drawdown': _to_float(_get_val('Avg. Drawdown')),
+            'avg_drawdown_days': _to_int(_get_val('Avg. Drawdown Days')),
+            'recovery_factor': _to_float(_get_val('Recovery Factor')),
+            'ulcer_index': _to_float(_get_val('Ulcer Index')),
+            'serenity_index': _to_float(_get_val('Serenity Index')),
+            'volatility_annualized': _to_float(_get_val('Volatility (ann.)') or _get_val('Volatility')),
+        }
+
+        return payload
