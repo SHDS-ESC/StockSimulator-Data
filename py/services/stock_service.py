@@ -42,6 +42,95 @@ class StockService:
             }
         except Exception as e:
             raise ValueError(f"티커 목록 조회 실패: {str(e)}")
+    
+    def _find_nearest_date(self, target_date, date_index, allow_fallback=True, fallback_to_first=False):
+        """인덱스에서 가장 가까운 날짜를 찾는 헬퍼 함수
+        
+        Args:
+            target_date: 찾고자 하는 날짜 (date 객체 또는 datetime)
+            date_index: pandas DatetimeIndex 또는 날짜 인덱스
+            allow_fallback: 정확한 날짜가 없을 때 가장 가까운 날짜 사용 여부
+            fallback_to_first: 정확한 날짜가 없고 allow_fallback=True일 때, 
+                              가장 가까운 날짜도 없으면 첫 번째 날짜 사용 여부
+        
+        Returns:
+            tuple: (찾은 날짜, 날짜가 변경되었는지 여부)
+        
+        Raises:
+            ValueError: 날짜를 찾을 수 없고 fallback도 불가능한 경우
+        """
+        target_date = pd.to_datetime(target_date).date() if not isinstance(target_date, dt.date) else target_date
+        
+        # 정확한 날짜가 있는지 확인
+        if target_date in date_index:
+            return target_date, False
+        
+        # 정확한 날짜가 없으면 가장 가까운 이전 날짜 찾기
+        available_dates = date_index[date_index <= target_date]
+        
+        if len(available_dates) > 0:
+            nearest_date = available_dates.max()
+            if allow_fallback:
+                return nearest_date, True
+            else:
+                raise ValueError(
+                    f"정확한 날짜 ({target_date})를 찾을 수 없습니다. "
+                    f"가장 가까운 날짜: {nearest_date}. "
+                    f"데이터 범위: {date_index.min()} ~ {date_index.max()}"
+                )
+        
+        # 가장 가까운 날짜도 없으면
+        if fallback_to_first and len(date_index) > 0:
+            return date_index[0], True
+        
+        # 모든 fallback이 실패하면 에러
+        raise ValueError(
+            f"날짜 ({target_date})를 찾을 수 없습니다. "
+            f"데이터 범위: {date_index.min()} ~ {date_index.max()}"
+        )
+    
+    def _ensure_date_in_index(self, target_date, date_index, context_name="날짜", fallback_to_boundary=False):
+        """인덱스에 날짜가 존재하는지 확인하고, 없으면 가장 가까운 날짜로 대체
+        
+        Args:
+            target_date: 확인할 날짜
+            date_index: pandas DatetimeIndex 또는 날짜 인덱스
+            context_name: 에러 메시지에 사용할 컨텍스트 이름 (예: "today_str", "start_str")
+            fallback_to_boundary: 가장 가까운 날짜도 없을 때 첫/마지막 날짜 사용 여부
+        
+        Returns:
+            tuple: (유효한 날짜, 원래 날짜와 다른지 여부)
+        """
+        target_date = pd.to_datetime(target_date).date() if not isinstance(target_date, dt.date) else target_date
+        
+        # 날짜가 인덱스에 있는지 확인
+        if target_date in date_index:
+            return target_date, False
+        
+        # 없으면 가장 가까운 이전 날짜 찾기
+        available_dates = date_index[date_index <= target_date]
+        
+        if len(available_dates) > 0:
+            nearest_date = available_dates.max()
+            print(f"⚠️ {context_name} ({target_date})이(가) dropna()로 제거되어 가장 가까운 날짜 사용: {nearest_date}")
+            return nearest_date, True
+        
+        # 가장 가까운 날짜도 없으면
+        if fallback_to_boundary:
+            if target_date < date_index.min():
+                fallback_date = date_index[0]
+                print(f"⚠️ {context_name} ({target_date})이(가) dropna()로 제거되어 첫 번째 날짜 사용: {fallback_date}")
+                return fallback_date, True
+            else:
+                fallback_date = date_index[-1]
+                print(f"⚠️ {context_name} ({target_date})이(가) dropna()로 제거되어 마지막 날짜 사용: {fallback_date}")
+                return fallback_date, True
+        
+        # 모든 fallback이 실패하면 에러
+        raise ValueError(
+            f"{context_name} ({target_date}) 이후의 데이터가 dropna()로 모두 제거되었습니다. "
+            f"데이터 범위: {date_index.min()} ~ {date_index.max()}"
+        )
 
     def predict_stock(self, request):
         """주식 예측 실행 함수 - 슬라이딩 윈도우 방식"""
@@ -115,7 +204,13 @@ class StockService:
 
         # 3. 사용 데이터 범위 산정 (메모리/시각화 최적화)
         today_dt = pd.to_datetime(today).date() # 입력된, 전달받은 today (메서드 호출)
-        today_str= stock_data.index[stock_data.index <= today_dt].max() # Boolean Indexing 사용 -> today가 휴일일 수 있으므로
+        
+        # today_dt 이하의 날짜 중 가장 가까운 날짜 찾기 (Boolean Indexing 사용 -> today가 휴일일 수 있으므로)
+        today_str, date_changed = self._find_nearest_date(today_dt, stock_data.index, allow_fallback=True)
+        
+        if date_changed:
+            print(f"⚠️ 요청한 날짜 ({today_dt})에 데이터가 없어 가장 가까운 이전 날짜 사용: {today_str}")
+        
         today_idx = stock_data.index.get_loc(today_str)
         start_idx = max(0, today_idx - train_days) # train_days => 영업일 기준임. today_idx를 빼고 n일 전부터 하루 전까지 학습 데이터로 사용
         end_idx = min(today_idx + predict_steps, len(stock_data) - 1) # predict_steps => 오늘로부터 예측일. 존재한다면 영업일 기준으로 설정
@@ -137,7 +232,13 @@ class StockService:
         stock_data = prepared_data.loc[start_str:end_str]
 
         # index 갱신
+        # dropna()로 인해 날짜들이 제거될 수 있으므로, 존재 여부 확인 후 가장 가까운 날짜 사용
+        today_str, _ = self._ensure_date_in_index(today_str, stock_data.index, context_name="today_str")
         today_idx = stock_data.index.get_loc(today_str)
+        
+        start_str, _ = self._ensure_date_in_index(start_str, stock_data.index, context_name="start_str", fallback_to_boundary=True)
+        end_str, _ = self._ensure_date_in_index(end_str, stock_data.index, context_name="end_str", fallback_to_boundary=True)
+        
         start_idx = stock_data.index.get_loc(start_str)
         end_idx = stock_data.index.get_loc(end_str)
 
