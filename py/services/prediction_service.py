@@ -93,6 +93,17 @@ class StockPredictor:
         # 거래량 분석
         df_temp['volume_sma_10'] = df_temp['volume'].rolling(window=10).mean()
         df_temp['volume_ratio'] = df_temp['volume'] / df_temp['volume_sma_10']
+
+        # 타겟 변수 생성 (다음날 수익률, 단위: 소수)
+        # shift(-1)은 아래행을 위로 끌어 올리는 것. 즉, 내일의 종가 / 오늘의 종가 == 내일 수익률 을 y로 두고
+        # x로는 오늘의 피처 변수들을 두는 것. 로그 수익률에 -1을 하지 않는건, np.log(내일 종가) - np.log(오늘 종가) == np.log(내일종가/오늘종가) 이므로...
+        df_temp['simple_rtn'] = (df_temp['close'].shift(-1) / df_temp['close'] - 1)
+        df_temp['log_rtn'] = np.log(df_temp['close'].shift(-1) / df_temp['close'])
+
+        # Lagged Feature 생성 (t-1일 수익률, t-2일 수익률 ..)
+        lags = [1, 2, 3, 5, 10]
+        for l in lags:
+            df_temp[f'rtn_lag_{l}'] = df_temp['simple_rtn'].shift(l)
         
         return df_temp
     
@@ -136,12 +147,7 @@ class StockPredictor:
         
         df_temp = self.calculate_technical_indicators(df_temp)
         df_temp = self.add_engineered_features(df_temp)
-        
-        # 타겟 변수 생성 (다음날 수익률, 단위: 소수)
-        # shift(-1)은 아래행을 위로 끌어 올리는 것. 즉, 내일의 종가 / 오늘의 종가 == 내일 수익률 을 y로 두고
-        # x로는 오늘의 피처 변수들을 두는 것. 로그 수익률에 -1을 하지 않는건, np.log(내일 종가) - np.log(오늘 종가) == np.log(내일종가/오늘종가) 이므로...
-        df_temp['simple_rtn'] = (df_temp['close'].shift(-1) / df_temp['close'] - 1)
-        df_temp['log_rtn'] = np.log(df_temp['close'].shift(-1) / df_temp['close'])
+
 
         # NaN 제거
         df_temp = df_temp.dropna()
